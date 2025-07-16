@@ -5,27 +5,33 @@ env.allowLocalModels = true;
 env.allowRemoteModels = true;
 
 let tokenClassifier: unknown = null;
+let modelPromise: Promise<unknown> | null = null;
 
 export async function initializeLocalModel() {
   if (tokenClassifier) return tokenClassifier;
+  if (modelPromise) return modelPromise;
   
-  try {
-    console.log('Loading local PII detection model...');
-    tokenClassifier = await pipeline(
-      'token-classification',
-      'iiiorg/piiranha-v1-detect-personal-information',
-      {
-        quantized: true,
-        local_files_only: false,
-        cache_dir: './models'
-      }
-    );
-    console.log('Local model loaded successfully');
-    return tokenClassifier;
-  } catch (error) {
-    console.error('Failed to load local model:', error);
-    throw error;
-  }
+  modelPromise = (async () => {
+    try {
+      console.log('Loading local PII detection model...');
+      tokenClassifier = await pipeline(
+        'token-classification',
+        'iiiorg/piiranha-v1-detect-personal-information',
+        {
+          quantized: true,
+          local_files_only: false,
+          cache_dir: './models'
+        }
+      );
+      console.log('Local model loaded successfully');
+      return tokenClassifier;
+    } catch (error) {
+      console.error('Failed to load local model:', error);
+      throw error;
+    }
+  })();
+  
+  return modelPromise;
 }
 
 export async function processTextWithLocalModel(text: string) {

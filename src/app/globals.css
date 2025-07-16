@@ -24,3 +24,13 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Improved contrast for placeholders */
+::placeholder {
+  color: color-mix(in srgb, var(--foreground) 50%, transparent);
+}
+
+/* For dark mode specific adjustments */
+.dark ::placeholder {
+  color: color-mix(in srgb, var(--foreground) 70%, transparent);
+}
