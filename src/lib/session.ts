@@ -2,6 +2,7 @@ export interface SessionData {
   originalText: string;
   redactedText: string;
   modifiedText: string;
+  restoredText?: string;
   piiMapping: Record<string, string>;
   timestamp: string;
   processingTime?: number;
@@ -22,8 +23,8 @@ export const sessionManager: SessionManager = {
   save: (data: SessionData) => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-    } catch (error) {
-      console.error('Failed to save session:', error);
+    } catch (_error) {
+      console.error('Failed to save session:', _error);
     }
   },
 
@@ -31,8 +32,8 @@ export const sessionManager: SessionManager = {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       return saved ? JSON.parse(saved) : null;
-    } catch (error) {
-      console.error('Failed to load session:', error);
+    } catch (_error) {
+      console.error('Failed to load session:', _error);
       return null;
     }
   },
@@ -41,15 +42,15 @@ export const sessionManager: SessionManager = {
     try {
       localStorage.removeItem(STORAGE_KEY);
       localStorage.removeItem(AUTO_SAVE_KEY);
-    } catch (error) {
-      console.error('Failed to clear session:', error);
+    } catch (_error) {
+      console.error('Failed to clear session:', _error);
     }
   },
 
   hasSavedSession: (): boolean => {
     try {
       return localStorage.getItem(STORAGE_KEY) !== null;
-    } catch (error) {
+    } catch {
       return false;
     }
   }
@@ -62,8 +63,8 @@ export const autoSaveManager = {
         ...data,
         timestamp: new Date().toISOString()
       }));
-    } catch (error) {
-      console.error('Failed to auto-save:', error);
+    } catch (_error) {
+      console.error('Failed to auto-save:', _error);
     }
   },
 
@@ -71,7 +72,7 @@ export const autoSaveManager = {
     try {
       const saved = localStorage.getItem(AUTO_SAVE_KEY);
       return saved ? JSON.parse(saved) : null;
-    } catch (error) {
+    } catch {
       return null;
     }
   },
@@ -79,8 +80,8 @@ export const autoSaveManager = {
   clear: () => {
     try {
       localStorage.removeItem(AUTO_SAVE_KEY);
-    } catch (error) {
-      console.error('Failed to clear auto-save:', error);
+    } catch (_error) {
+      console.error('Failed to clear auto-save:', _error);
     }
   }
 };

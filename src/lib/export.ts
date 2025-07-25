@@ -18,7 +18,7 @@ export function exportAsText(content: string, options: ExportOptions = {}) {
   URL.revokeObjectURL(url);
 }
 
-export function exportWithMetadata(content: string, metadata: Record<string, any>) {
+export function exportWithMetadata(content: string, metadata: Record<string, string | number | boolean>) {
   const header = Object.entries(metadata)
     .map(([key, value]) => `# ${key}: ${value}`)
     .join('\n');

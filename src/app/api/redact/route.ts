@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { HfInference } from '@huggingface/inference';
+import { processTextWithLocalModel, initializeLocalModel } from '@/lib/localModel';
+import { redactionTemplates } from '@/lib/templates';
+import { detectPIIWithPatterns, CONTEXT_PII_PATTERNS, VALIDATION_PII_PATTERNS } from '@/lib/patterns';
 
-interface PIIEntity {
+// Initialize HuggingFace client
+const hf = process.env.HF_TOKEN ? new HfInference(process.env.HF_TOKEN) : null;
+
+interface Entity {
   entity_group: string;
   word: string;
   start: number;
@@ -9,191 +15,272 @@ interface PIIEntity {
   score: number;
 }
 
-interface PIIMapping {
-  [key: string]: string;
-}
+function validateEntities(data: any): Entity[] {
+  if (!Array.isArray(data)) {
+    throw new Error('Invalid API response: expected array of entities');
+  }
 
-// Specialized PII categories for court/psychiatric reports
-const PII_CATEGORIES = {
-  'PER': 'PERSON',
-  'PERSON': 'PERSON',
-  'NAME': 'PERSON',
-  'ORG': 'ORGANIZATION',
-  'ORGANIZATION': 'ORGANIZATION',
-  'LOC': 'LOCATION',
-  'LOCATION': 'LOCATION',
-  'MISC': 'MISC',
-  'DATE': 'DATE',
-  'TIME': 'TIME',
-  'PHONE': 'PHONE',
-  'EMAIL': 'EMAIL',
-  'ADDRESS': 'ADDRESS',
-  'ID': 'ID_NUMBER',
-  'CASE': 'CASE_NUMBER',
-  'DOCKET': 'DOCKET_NUMBER',
-  'MEDICATION': 'MEDICATION',
-  'DIAGNOSIS': 'DIAGNOSIS',
-  'DOCTOR': 'DOCTOR',
-  'JUDGE': 'JUDGE',
-  'COURT': 'COURT',
-  'HOSPITAL': 'HOSPITAL'
-};
-
-// Context-aware patterns for court/psychiatric reports
-const CONTEXT_PATTERNS = [
-  { pattern: /\b(?:judge|hon\.?|honorable)\s+([a-z\s]+)/gi, category: 'JUDGE' },
-  { pattern: /\b(?:dr\.?|doctor)\s+([a-z\s]+)/gi, category: 'DOCTOR' },
-  { pattern: /\b(?:case|docket)\s*(?:no\.?|number)?\s*:?\s*([a-z0-9\-]+)/gi, category: 'CASE_NUMBER' },
-  { pattern: /\b(?:patient|client|defendant|plaintiff)\s+([a-z\s]+)/gi, category: 'PERSON' },
-  { pattern: /\b(?:medication|drug|prescription)\s*:?\s*([a-z\s]+)/gi, category: 'MEDICATION' },
-  { pattern: /\b(?:diagnosed|diagnosis)\s*:?\s*([a-z\s]+)/gi, category: 'DIAGNOSIS' },
-  { pattern: /\b(?:court|courthouse)\s+([a-z\s]+)/gi, category: 'COURT' },
-  { pattern: /\b(?:hospital|clinic|facility)\s+([a-z\s]+)/gi, category: 'HOSPITAL' },
-  { pattern: /\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b/g, category: 'DATE' },
-  { pattern: /\b\d{3}[\-\.\s]?\d{3}[\-\.\s]?\d{4}\b/g, category: 'PHONE' },
-  { pattern: /\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b/g, category: 'EMAIL' },
-  { pattern: /\b\d+\s+[a-zA-Z\s]+(?:street|st|avenue|ave|road|rd|drive|dr|lane|ln|court|ct|place|pl)\b/gi, category: 'ADDRESS' }
-];
-
-function extractPIIWithContext(text: string): { entities: PIIEntity[], mapping: PIIMapping } {
-  const entities: PIIEntity[] = [];
-  const mapping: PIIMapping = {};
-  const categoryCounts: { [key: string]: number } = {};
-  
-  // Apply context-aware patterns
-  CONTEXT_PATTERNS.forEach(({ pattern, category }) => {
-    let match;
-    while ((match = pattern.exec(text)) !== null) {
-      const start = match.index;
-      const end = start + match[0].length;
-      
-      // Count occurrences of each category
-      categoryCounts[category] = (categoryCounts[category] || 0) + 1;
-      const placeholder = `<PII ${category} ${categoryCounts[category]}>`;
-      
-      entities.push({
-        entity_group: category,
-        word: match[0],
-        start,
-        end,
-        score: 0.9 // High confidence for pattern matches
-      });
-      
-      mapping[placeholder] = match[0];
+  return data.map((item: any) => {
+    if (typeof item !== 'object' || item === null) {
+      throw new Error('Invalid entity: expected object');
     }
+
+    if (typeof item.entity_group !== 'string' ||
+        typeof item.word !== 'string' ||
+        typeof item.start !== 'number' ||
+        typeof item.end !== 'number' ||
+        typeof item.score !== 'number') {
+      throw new Error(`Invalid entity structure: ${JSON.stringify(item)}`);
+    }
+
+    return {
+      entity_group: item.entity_group,
+      word: item.word,
+      start: item.start,
+      end: item.end,
+      score: item.score
+    };
   });
-  
-  return { entities, mapping };
 }
 
-function processWithRemoteAPI(text: string, hfToken: string) {
-  const hf = new HfInference(hfToken);
-  
-  return hf.tokenClassification({
-    model: 'iiiorg/piiranha-v1-detect-personal-information',
-    inputs: text,
-  });
+async function extractWithPatterns(text: string): Promise<Entity[]> {
+  return detectPIIWithPatterns(text, CONTEXT_PII_PATTERNS);
 }
 
-async function processWithLocalModel(text: string) {
+async function processWithHuggingFace(text: string): Promise<Entity[]> {
+  if (!hf) {
+    throw new Error('HuggingFace token not configured');
+  }
+  
   try {
-    // Try to use the local model with @xenova/transformers
-    const { processTextWithLocalModel } = await import('@/lib/localModel');
-    const entities = await processTextWithLocalModel(text);
-    return { entities, mapping: {} };
-  } catch (error) {
-    console.error('Local model processing error, falling back to context patterns:', error);
-    // Fall back to context-aware extraction
-    const { entities, mapping } = extractPIIWithContext(text);
-    return { entities, mapping };
+    const result = await hf.tokenClassification({
+      model: 'iiiorg/piiranha-v1-detect-personal-information',
+      inputs: text,
+    });
+    
+    return validateEntities(result);
+  } catch (error: any) {
+    // If the model fails, try alternative models
+    const alternativeModels = [
+      'dslim/bert-base-NER',
+      'Davlan/bert-base-multilingual-cased-ner-hrl',
+      'Jean-Baptiste/roberta-large-ner-english'
+    ];
+    
+    for (const model of alternativeModels) {
+      try {
+        const result = await hf.tokenClassification({
+          model,
+          inputs: text,
+        });
+        return validateEntities(result);
+      } catch {
+        // Continue to next model
+      }
+    }
+    
+    throw new Error('All HuggingFace models failed');
   }
 }
 
-function redactText(text: string, entities: PIIEntity[], existingMapping: PIIMapping = {}): { redacted: string, mapping: PIIMapping } {
-  const mapping = { ...existingMapping };
-  const categoryCounts: { [key: string]: number } = {};
-  let redacted = text;
+// New function to validate redacted text using patterns (replaces SmolLM3 validation)
+function validateWithPatterns(text: string): Entity[] {
+  try {
+    // Detect any PII that remains in supposedly redacted text
+    const entities = detectPIIWithPatterns(text, VALIDATION_PII_PATTERNS);
+    console.log(`Validation found ${entities.length} potential PII entities`);
+    return entities;
+  } catch (error) {
+    console.warn('Pattern validation failed:', error);
+    return [];
+  }
+}
+
+function normalizeEntityType(type: string): string {
+  const typeMap: Record<string, string> = {
+    'PER': 'PERSON',
+    'PERSON': 'PERSON',
+    'PERSON_NAME': 'PERSON',
+    'FULL_NAME': 'PERSON',
+    'PERSON_TITLE': 'PERSON',
+    'PERSON_ROLE': 'PERSON',
+    'PATIENT': 'PERSON',
+    'PARTY': 'PERSON',
+    'ORG': 'ORGANIZATION',
+    'ORGANIZATION': 'ORGANIZATION',
+    'LOC': 'LOCATION',
+    'LOCATION': 'LOCATION',
+    'DATE': 'DATE',
+    'TIME': 'TIME',
+    'MISC': 'MISC',
+    'EMAIL': 'EMAIL',
+    'PHONE': 'PHONE',
+    'PHONE_NUMBER': 'PHONE',
+    'ADDRESS': 'ADDRESS',
+    'SSN': 'SSN',
+    'CREDIT_CARD': 'CREDIT_CARD',
+    'IP_ADDRESS': 'IP_ADDRESS',
+    'MEDICATION': 'MEDICATION',
+    'DIAGNOSIS': 'DIAGNOSIS',
+    'CASE_NUMBER': 'CASE_NUMBER',
+    'ID_NUMBER': 'ID_NUMBER',
+    'ACCOUNT_NUMBER': 'ACCOUNT_NUMBER'
+  };
   
-  // Sort entities by start position in reverse order to maintain indices
+  return typeMap[type.toUpperCase()] || type.toUpperCase();
+}
+
+function redactEntities(text: string, entities: Entity[]): { redacted: string, mapping: Record<string, string> } {
+  let redacted = text;
+  const mapping: Record<string, string> = {};
+  const entityCounts: Record<string, number> = {};
+  
+  // Sort entities by start position in reverse order
   const sortedEntities = [...entities].sort((a, b) => b.start - a.start);
   
-  sortedEntities.forEach(entity => {
-    const category = PII_CATEGORIES[entity.entity_group.toUpperCase() as keyof typeof PII_CATEGORIES] || 'MISC';
-    categoryCounts[category] = (categoryCounts[category] || 0) + 1;
+  for (const entity of sortedEntities) {
+    const normalizedType = normalizeEntityType(entity.entity_group);
+    entityCounts[normalizedType] = (entityCounts[normalizedType] || 0) + 1;
+    const placeholder = `<PII ${normalizedType} ${entityCounts[normalizedType]}>`;
     
-    const placeholder = `<PII ${category} ${categoryCounts[category]}>`;
     mapping[placeholder] = entity.word;
-    
     redacted = redacted.slice(0, entity.start) + placeholder + redacted.slice(entity.end);
-  });
+  }
   
   return { redacted, mapping };
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const { text, type } = await request.json();
+    const { text, type = 'auto', template } = await request.json();
     
-    if (!text || typeof text !== 'string') {
-      return NextResponse.json({ error: 'Invalid text input' }, { status: 400 });
+    if (!text) {
+      return NextResponse.json({ error: 'No text provided' }, { status: 400 });
     }
     
-    let entities: PIIEntity[] = [];
-    let contextMapping: PIIMapping = {};
+    let entities: Entity[] = [];
+    let processingMethod = type;
     
-    if (type === 'remote') {
-      const hfToken = process.env.HF_TOKEN;
-      if (!hfToken) {
-        return NextResponse.json({ error: 'HF_TOKEN not configured' }, { status: 500 });
+    // Apply template-specific patterns if provided
+    if (template && redactionTemplates[template]) {
+      const templatePatterns = redactionTemplates[template].patterns;
+      for (const { pattern, category } of templatePatterns) {
+        // Create a new RegExp instance to avoid modifying frozen regex objects
+        const regex = new RegExp(pattern.source, pattern.flags);
+        regex.lastIndex = 0;
+        const matches = Array.from(text.matchAll(regex)) as RegExpMatchArray[];
+        for (const match of matches) {
+          if (match.index !== undefined) {
+            entities.push({
+              entity_group: category,
+              word: match[0],
+              start: match.index,
+              end: match.index + match[0].length,
+              score: 0.9
+            });
+          }
+        }
+      }
+    }
+    
+    // Process based on type
+    if (type === 'remote' || type === 'auto') {
+      try {
+        const hfEntities = await processWithHuggingFace(text);
+        entities.push(...hfEntities);
+        processingMethod = 'remote';
+      } catch (error) {
+        console.warn('Remote processing failed:', error);
+        if (type === 'remote') {
+          // If explicitly remote, try pattern extraction as fallback
+          const patternEntities = await extractWithPatterns(text);
+          entities.push(...patternEntities);
+          processingMethod = 'pattern';
+        } else {
+          // For 'auto' type, fallback to local processing
+          processingMethod = 'local';
+        }
+      }
+    }
+    
+    if (type === 'local' || (type === 'auto' && processingMethod !== 'remote')) {
+      try {
+        await initializeLocalModel();
+        const localEntities = await processTextWithLocalModel(text);
+        entities.push(...localEntities);
+        processingMethod = 'local';
+      } catch (error) {
+        console.warn('Local processing failed:', error);
+        // Fall back to pattern extraction
+        const patternEntities = await extractWithPatterns(text);
+        entities.push(...patternEntities);
+        processingMethod = 'pattern';
+      }
+    }
+    
+    // If no entities found yet, use pattern extraction
+    if (entities.length === 0) {
+      entities = await extractWithPatterns(text);
+      processingMethod = 'pattern';
+    }
+    
+    // Remove duplicates and merge overlapping entities
+    // Simplified approach: sort by start position, then iterate and keep highest scoring entities
+    const uniqueEntities = (() => {
+      if (entities.length === 0) return [];
+      
+      // Sort entities by start position
+      const sortedEntities = [...entities].sort((a, b) => a.start - b.start);
+      const result: Entity[] = [];
+      
+      for (const entity of sortedEntities) {
+        // Check if this entity overlaps with the last one in result
+        if (result.length > 0) {
+          const lastEntity = result[result.length - 1];
+          // Check for overlap: entities overlap if one starts before the other ends
+          if (entity.start < lastEntity.end) {
+            // Overlap detected - keep the entity with higher score
+            if (entity.score > lastEntity.score) {
+              result[result.length - 1] = entity;
+            }
+            // If current entity has lower or equal score, we keep the existing one (do nothing)
+          } else {
+            // No overlap - add the entity
+            result.push(entity);
+          }
+        } else {
+          // First entity - always add
+          result.push(entity);
+        }
       }
       
-      try {
-        const result = await processWithRemoteAPI(text, hfToken);
-        entities = Array.isArray(result) ? result.map(item => ({
-          entity_group: item.entity_group || item.entity || 'MISC',
-          word: item.word,
-          start: item.start,
-          end: item.end,
-          score: item.score
-        })) : [];
-      } catch (error) {
-        console.error('Remote API error:', error);
-        // Fall back to context-aware extraction
-        const contextResult = extractPIIWithContext(text);
-        entities = contextResult.entities;
-        contextMapping = contextResult.mapping;
-      }
-    } else {
-      // Local processing
-      const localResult = await processWithLocalModel(text);
-      entities = localResult.entities;
-      contextMapping = localResult.mapping;
+      return result;
+    })();
+    
+    // Perform initial redaction
+    let { redacted, mapping } = redactEntities(text, uniqueEntities);
+    
+    // Apply pattern-based validation to catch any missed PII
+    const validationEntities = validateWithPatterns(redacted);
+    if (validationEntities.length > 0) {
+      // Apply additional redactions
+      const additionalRedaction = redactEntities(redacted, validationEntities);
+      redacted = additionalRedaction.redacted;
+      // Merge mappings
+      mapping = { ...mapping, ...additionalRedaction.mapping };
     }
-    
-    // Combine API results with context-aware extraction
-    const combinedResult = extractPIIWithContext(text);
-    const allEntities = [...entities, ...combinedResult.entities];
-    
-    // Remove duplicates based on overlapping positions
-    const uniqueEntities = allEntities.filter((entity, index, arr) => {
-      return !arr.some((other, otherIndex) => {
-        if (index >= otherIndex) return false;
-        return (entity.start >= other.start && entity.start < other.end) ||
-               (entity.end > other.start && entity.end <= other.end);
-      });
-    });
-    
-    const { redacted, mapping } = redactText(text, uniqueEntities, contextMapping);
     
     return NextResponse.json({
       redacted,
       mapping,
-      entities: uniqueEntities,
-      processingType: type
+      method: processingMethod,
+      entityCount: uniqueEntities.length
     });
-    
-  } catch (error) {
-    console.error('API Error:', error);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  } catch (error: any) {
+    console.error('Redaction error:', error);
+    return NextResponse.json(
+      { error: error.message || 'Internal server error' },
+      { status: 500 }
+    );
   }
 }
