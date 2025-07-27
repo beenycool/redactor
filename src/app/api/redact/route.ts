@@ -1,11 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { HfInference } from '@huggingface/inference';
-import { processTextWithLocalModel, initializeLocalModel } from '@/lib/localModel';
 import { redactionTemplates } from '@/lib/templates';
-import { detectPIIWithPatterns, CONTEXT_PII_PATTERNS, VALIDATION_PII_PATTERNS } from '@/lib/patterns';
-
-// Initialize HuggingFace client
-const hf = process.env.HF_TOKEN ? new HfInference(process.env.HF_TOKEN) : null;
+import { detectPIIWithPatterns, ALL_PII_PATTERNS, detectContextPII, detectValidationPII } from '@/lib/patterns';
+import { processTextWithLocalModel } from '@/lib/localModel';
 
 interface Entity {
   entity_group: string;
@@ -44,51 +40,58 @@ function validateEntities(data: any): Entity[] {
 }
 
 async function extractWithPatterns(text: string): Promise<Entity[]> {
-  return detectPIIWithPatterns(text, CONTEXT_PII_PATTERNS);
+  return detectContextPII(text);
 }
 
-async function processWithHuggingFace(text: string): Promise<Entity[]> {
-  if (!hf) {
-    throw new Error('HuggingFace token not configured');
+function processCustomWordLists(text: string, alwaysRedactWords: string[], alwaysIgnoreWords: string[]): Entity[] {
+  const entities: Entity[] = [];
+  const ignoredRanges: Array<{start: number, end: number}> = [];
+  
+  // First, mark ranges to ignore
+  for (const word of alwaysIgnoreWords) {
+    const regex = new RegExp(word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      ignoredRanges.push({
+        start: match.index,
+        end: match.index + match[0].length
+      });
+    }
   }
   
-  try {
-    const result = await hf.tokenClassification({
-      model: 'iiiorg/piiranha-v1-detect-personal-information',
-      inputs: text,
-    });
-    
-    return validateEntities(result);
-  } catch (error: any) {
-    // If the model fails, try alternative models
-    const alternativeModels = [
-      'dslim/bert-base-NER',
-      'Davlan/bert-base-multilingual-cased-ner-hrl',
-      'Jean-Baptiste/roberta-large-ner-english'
-    ];
-    
-    for (const model of alternativeModels) {
-      try {
-        const result = await hf.tokenClassification({
-          model,
-          inputs: text,
+  // Then, find words to always redact (excluding ignored ranges)
+  for (const word of alwaysRedactWords) {
+    const regex = new RegExp(word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      const start = match.index;
+      const end = match.index + match[0].length;
+      
+      // Check if this range overlaps with ignored ranges
+      const isIgnored = ignoredRanges.some(range =>
+        start < range.end && end > range.start
+      );
+      
+      if (!isIgnored) {
+        entities.push({
+          entity_group: 'CUSTOM',
+          word: match[0],
+          start,
+          end,
+          score: 1.0 // High confidence for custom lists
         });
-        return validateEntities(result);
-      } catch {
-        // Continue to next model
       }
     }
-    
-    throw new Error('All HuggingFace models failed');
   }
+  
+  return entities;
 }
 
-// New function to validate redacted text using patterns (replaces SmolLM3 validation)
+// Fallback pattern validation
 function validateWithPatterns(text: string): Entity[] {
   try {
-    // Detect any PII that remains in supposedly redacted text
-    const entities = detectPIIWithPatterns(text, VALIDATION_PII_PATTERNS);
-    console.log(`Validation found ${entities.length} potential PII entities`);
+    const entities = detectValidationPII(text);
+    console.log(`Pattern validation found ${entities.length} potential PII entities`);
     return entities;
   } catch (error) {
     console.warn('Pattern validation failed:', error);
@@ -152,14 +155,18 @@ function redactEntities(text: string, entities: Entity[]): { redacted: string, m
 
 export async function POST(request: NextRequest) {
   try {
-    const { text, type = 'auto', template } = await request.json();
+    const { text, template, confidenceThreshold = 0.7, alwaysRedactWords = [], alwaysIgnoreWords = [] } = await request.json();
     
     if (!text) {
       return NextResponse.json({ error: 'No text provided' }, { status: 400 });
     }
     
     let entities: Entity[] = [];
-    let processingMethod = type;
+    let processingMethod = 'local_models';
+    
+    // Process custom word lists first
+    const customEntities = processCustomWordLists(text, alwaysRedactWords, alwaysIgnoreWords);
+    entities.push(...customEntities);
     
     // Apply template-specific patterns if provided
     if (template && redactionTemplates[template]) {
@@ -171,57 +178,46 @@ export async function POST(request: NextRequest) {
         const matches = Array.from(text.matchAll(regex)) as RegExpMatchArray[];
         for (const match of matches) {
           if (match.index !== undefined) {
-            entities.push({
-              entity_group: category,
-              word: match[0],
-              start: match.index,
-              end: match.index + match[0].length,
-              score: 0.9
-            });
+            // Check if this match overlaps with custom entities or ignored words
+            const start = match.index;
+            const end = match.index + match[0].length;
+            const isOverlapping = entities.some(entity =>
+              start < entity.end && end > entity.start
+            );
+            
+            if (!isOverlapping) {
+              entities.push({
+                entity_group: category,
+                word: match[0],
+                start: match.index,
+                end: match.index + match[0].length,
+                score: 0.9
+              });
+            }
           }
         }
       }
     }
     
-    // Process based on type
-    if (type === 'remote' || type === 'auto') {
-      try {
-        const hfEntities = await processWithHuggingFace(text);
-        entities.push(...hfEntities);
-        processingMethod = 'remote';
-      } catch (error) {
-        console.warn('Remote processing failed:', error);
-        if (type === 'remote') {
-          // If explicitly remote, try pattern extraction as fallback
-          const patternEntities = await extractWithPatterns(text);
-          entities.push(...patternEntities);
-          processingMethod = 'pattern';
-        } else {
-          // For 'auto' type, fallback to local processing
-          processingMethod = 'local';
-        }
-      }
-    }
+    // Use local models for PII detection
+    // First, extract with patterns
+    const patternEntities = await extractWithPatterns(text);
+    entities.push(...patternEntities);
     
-    if (type === 'local' || (type === 'auto' && processingMethod !== 'remote')) {
-      try {
-        await initializeLocalModel();
-        const localEntities = await processTextWithLocalModel(text);
-        entities.push(...localEntities);
-        processingMethod = 'local';
-      } catch (error) {
-        console.warn('Local processing failed:', error);
-        // Fall back to pattern extraction
-        const patternEntities = await extractWithPatterns(text);
-        entities.push(...patternEntities);
-        processingMethod = 'pattern';
-      }
-    }
-    
-    // If no entities found yet, use pattern extraction
-    if (entities.length === 0) {
-      entities = await extractWithPatterns(text);
-      processingMethod = 'pattern';
+    // Use JavaScript-based local models (replaces Python servers)
+    try {
+      const localModelEntities = await processTextWithLocalModel(text);
+      entities.push(...localModelEntities.map((entity: any) => ({
+        entity_group: entity.entity_group || entity.label || 'MISC',
+        word: entity.word || '',
+        start: entity.start || 0,
+        end: entity.end || 0,
+        score: entity.score || 0.8
+      })));
+      processingMethod = 'local_js_models + patterns';
+    } catch (error) {
+      console.warn('Local JS model processing failed:', error);
+      processingMethod = 'patterns only';
     }
     
     // Remove duplicates and merge overlapping entities
@@ -257,24 +253,35 @@ export async function POST(request: NextRequest) {
       return result;
     })();
     
-    // Perform initial redaction
-    let { redacted, mapping } = redactEntities(text, uniqueEntities);
+    // Filter entities based on confidence threshold
+    const filteredEntities = uniqueEntities.filter(entity => entity.score >= confidenceThreshold);
     
-    // Apply pattern-based validation to catch any missed PII
-    const validationEntities = validateWithPatterns(redacted);
-    if (validationEntities.length > 0) {
-      // Apply additional redactions
-      const additionalRedaction = redactEntities(redacted, validationEntities);
-      redacted = additionalRedaction.redacted;
-      // Merge mappings
-      mapping = { ...mapping, ...additionalRedaction.mapping };
+    // Perform initial redaction
+    let { redacted, mapping } = redactEntities(text, filteredEntities);
+    
+    // Apply pattern validation to catch any missed PII
+    try {
+      const validationEntities = validateWithPatterns(redacted);
+      if (validationEntities.length > 0) {
+        // Apply additional redactions
+        const additionalRedaction = redactEntities(redacted, validationEntities);
+        redacted = additionalRedaction.redacted;
+        // Merge mappings
+        mapping = { ...mapping, ...additionalRedaction.mapping };
+      }
+    } catch (error) {
+      console.warn('Pattern validation failed:', error);
     }
     
     return NextResponse.json({
       redacted,
       mapping,
       method: processingMethod,
-      entityCount: uniqueEntities.length
+      entityCount: filteredEntities.length,
+      totalEntities: uniqueEntities.length,
+      entities: filteredEntities, // Return filtered entities for frontend highlighting
+      confidenceThreshold,
+      localModelsUsed: true
     });
   } catch (error: any) {
     console.error('Redaction error:', error);

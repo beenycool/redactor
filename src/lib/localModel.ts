@@ -1,123 +1,105 @@
 import { pipeline, env } from '@xenova/transformers';
-import { existsSync, mkdirSync } from 'fs';
-import { join } from 'path';
 import { splitTextIntoChunks, adjustEntityPositions, mergeEntities } from './textChunking';
 
-// Ensure cache directory exists
-const cacheDir = join(process.cwd(), 'models');
-try {
-  if (!existsSync(cacheDir)) {
-    mkdirSync(cacheDir, { recursive: true });
-  }
-} catch (error) {
-  console.warn('Failed to create cache directory, using default cache location:', error);
-  // Module will continue to work with default cache location
+// Configure transformers.js environment for browser
+if (typeof window !== 'undefined') {
+  // We're in the browser
+  env.allowLocalModels = false;
+  env.allowRemoteModels = true;
+  // Use browser cache (IndexedDB)
+  env.cacheDir = './.cache';
 }
 
-// Configure transformers.js environment for Node.js server
-env.allowLocalModels = true;
+// Primary PII model - Piiranha is specialized for PII detection
+const PRIMARY_PII_MODEL = 'iiiorg/piiranha-v1-detect-personal-information';
 
-// For models that fail to load remotely, try to use local versions
-const LOCAL_ONLY_MODELS = new Set([
-    'iiiorg/piiranha-v1-detect-personal-information'
-]);
+// Fallback model if Piiranha fails to load
+const FALLBACK_MODEL = 'Xenova/bert-base-NER';
 
-let modelPromise: Promise<any> | null = null;
-let modelLoadError: Error | null = null;
+// Singleton pattern implementation for model caching
+class LocalModelSingleton {
+  private static instance: LocalModelSingleton;
+  private model: any = null;
+  private modelPromise: Promise<any> | null = null;
+  private isInitialized: boolean = false;
 
-// Individual model instances for ensemble processing
-let piiranhaModel: any = null;
-let bertModel: any = null;
-let piiranhaModelPromise: Promise<any> | null = null;
-let bertModelPromise: Promise<any> | null = null;
+  private constructor() {}
 
-// Alternative models that are publicly accessible
-// Using multiple models for better PII detection coverage
-const PII_MODELS = [
-    'Xenova/bert-base-NER',
-    'Xenova/distilbert-base-NER',
-    'Xenova/bert-base-cased-finetuned-conll03-english' // CoNLL-03 trained
-];
+  static getInstance(): LocalModelSingleton {
+    if (!LocalModelSingleton.instance) {
+      LocalModelSingleton.instance = new LocalModelSingleton();
+    }
+    return LocalModelSingleton.instance;
+  }
+
+  async initializeModel() {
+    // Return immediately if model is already loaded
+    if (this.model) return this.model;
+    if (this.modelPromise) return this.modelPromise;
+
+    // Mark as initialized to prevent multiple initialization attempts
+    if (this.isInitialized) {
+      // Wait for existing promise to resolve
+      return this.modelPromise;
+    }
+
+    this.isInitialized = true;
+
+    this.modelPromise = (async () => {
+      // Try to load the Piiranha model first (specialized for PII)
+      try {
+        console.log(`Attempting to load Piiranha PII model: ${PRIMARY_PII_MODEL}`);
+        this.model = await pipeline('token-classification', PRIMARY_PII_MODEL, {
+          dtype: 'q4', // 4-bit quantization for better performance
+          local_files_only: false,
+          progress_callback: (data: any) => {
+            if (data.status === 'downloading') {
+              console.log(`Downloading ${data.file}: ${Math.round(data.progress)}%`);
+            }
+          }
+        } as any);
+        console.log(`Piiranha PII model loaded successfully: ${PRIMARY_PII_MODEL}`);
+        return this.model;
+      } catch (error) {
+        console.warn(`Failed to load Piiranha model ${PRIMARY_PII_MODEL}:`, error);
+        
+        // Fallback to general NER model
+        try {
+          console.log(`Attempting to load fallback BERT model: ${FALLBACK_MODEL}`);
+          this.model = await pipeline('token-classification', FALLBACK_MODEL, {
+            dtype: 'q4', // 4-bit quantization for better performance
+            local_files_only: false,
+            progress_callback: (data: any) => {
+              if (data.status === 'downloading') {
+                console.log(`Downloading ${data.file}: ${Math.round(data.progress)}%`);
+              }
+            }
+          } as any);
+          console.log(`Fallback BERT model loaded successfully: ${FALLBACK_MODEL}`);
+          return this.model;
+        } catch (fallbackError) {
+          console.error(`Failed to load fallback model ${FALLBACK_MODEL}:`, fallbackError);
+          this.isInitialized = false; // Reset initialization flag on failure
+          throw new Error('Failed to load any local model');
+        }
+      }
+    })();
+
+    return this.modelPromise;
+  }
+
+  getModel() {
+    return this.model;
+  }
+
+  isModelAvailable(): boolean {
+    return this.model !== null;
+  }
+}
 
 export async function initializeLocalModel() {
-  // Try to initialize the piiranha model first (it's our primary PII model)
-  const piiranhaModel = await initializePiiranhaModel().catch(() => null);
-  
-  // If piiranha model is available, return it
-  if (piiranhaModel) {
-    return piiranhaModel;
-  }
-
-  // Otherwise, try to initialize the BERT model as fallback
-  const bertModel = await initializeBertModel().catch(() => null);
-  
-  if (bertModel) {
-    return bertModel;
-  }
-
-  // If no models are available, throw an error
-  throw new Error('Failed to initialize any local model');
-}
-
-export async function initializePiiranhaModel() {
-  if (piiranhaModel) return piiranhaModel;
-  if (piiranhaModelPromise) return piiranhaModelPromise;
-
-  piiranhaModelPromise = (async () => {
-    // Try to load the piiranha model only
-    const piiranhaModelName = 'iiiorg/piiranha-v1-detect-personal-information';
-
-    try {
-      console.log(`Attempting to load Piiranha PII model: ${piiranhaModelName}`);
-      piiranhaModel = await pipeline('token-classification', piiranhaModelName, {
-        quantized: true,
-        local_files_only: false,
-        cache_dir: cacheDir,
-        token: process.env.HF_TOKEN || undefined
-      } as any);
-      console.log(`Piiranha PII model loaded successfully: ${piiranhaModelName}`);
-      return piiranhaModel;
-    } catch (error) {
-      console.warn(`Failed to load Piiranha model ${piiranhaModelName}:`, error);
-      // If Piiranha model fails, return null so we can use BERT as fallback
-      console.warn('Piiranha PII model failed to load, will use BERT model as fallback');
-      return null;
-    }
-  })();
-
-  return piiranhaModelPromise;
-}
-
-export async function initializeBertModel() {
-  if (bertModel) return bertModel;
-  if (bertModelPromise) return bertModelPromise;
-
-  bertModelPromise = (async () => {
-    const bertModelsToTry = PII_MODELS;
-
-    for (const modelName of bertModelsToTry) {
-      try {
-        console.log(`Attempting to load BERT model: ${modelName}`);
-        bertModel = await pipeline('token-classification', modelName, {
-          quantized: true,
-          local_files_only: false,
-          cache_dir: cacheDir,
-          revision: 'main',
-          token: process.env.HF_TOKEN || undefined
-        } as any);
-        console.log(`BERT model loaded successfully: ${modelName}`);
-        return bertModel;
-      } catch (error) {
-        console.warn(`Failed to load BERT model ${modelName}:`, error);
-        // Continue to next model
-      }
-    }
-
-    console.error('All BERT models failed to load');
-    throw new Error('Failed to load any BERT model');
-  })();
-
-  return bertModelPromise;
+  const singleton = LocalModelSingleton.getInstance();
+  return await singleton.initializeModel();
 }
 
 async function processTextWithModel(classifier: any, text: string) {
@@ -158,151 +140,24 @@ async function processTextWithModel(classifier: any, text: string) {
   return allEntities;
 }
 
-function combineModelResults(piiranhaEntities: any[], bertEntities: any[]) {
-  // Combine entities from both models
-  const allEntities = [
-    ...piiranhaEntities,
-    ...bertEntities
-  ];
-
-  // Sort entities by start position
-  const sortedEntities = [...allEntities].sort((a, b) => a.start - b.start);
-
-  // Group entities by overlapping positions
-  const groupedEntities: any[][] = [];
-  let currentGroup: any[] = [];
-
-  for (const entity of sortedEntities) {
-    if (currentGroup.length === 0) {
-      currentGroup.push(entity);
-    } else {
-      const lastEntity = currentGroup[currentGroup.length - 1];
-      // Check if entities overlap (allow small gaps for partial matches)
-      if (entity.start <= lastEntity.end + 2) {
-        currentGroup.push(entity);
-      } else {
-        groupedEntities.push(currentGroup);
-        currentGroup = [entity];
-      }
-    }
-  }
-
-  if (currentGroup.length > 0) {
-    groupedEntities.push(currentGroup);
-  }
-
-  // For each group, intelligently combine results from both models
-  const finalEntities = groupedEntities.map((group) => {
-    if (group.length === 1) {
-      return group[0];
-    }
-
-    // Prefer Piiranha model for PII-specific entities, BERT for general NER
-    const piiSpecific = [
-      'PERSON',
-      'PER',
-      'EMAIL',
-      'PHONE',
-      'ADDRESS',
-      'ID'
-    ];
-
-    const piiranhaEntity = group.find((e) => piiranhaEntities.includes(e));
-    const bertEntity = group.find((e) => bertEntities.includes(e));
-
-    if (piiranhaEntity && bertEntity) {
-      // If Piiranha found a PII-specific entity, prefer it
-      if (piiSpecific.some((type) => piiranhaEntity.entity_group.toUpperCase().includes(type))) {
-        return {
-          ...piiranhaEntity,
-          score: Math.max(piiranhaEntity.score, bertEntity.score * 0.8) // Boost score with confidence from both models
-        };
-      }
-
-      // Otherwise, prefer the higher scoring entity but boost score
-      const bestEntity = piiranhaEntity.score >= bertEntity.score ? piiranhaEntity : bertEntity;
-      return {
-        ...bestEntity,
-        score: Math.min(1.0, bestEntity.score + 0.1) // Small boost for consensus
-      };
-    }
-
-    // If only one model detected it, return the highest scoring entity
-    return group.sort((a, b) => b.score - a.score)[0];
-  });
-
-  return finalEntities;
-}
-
 export async function processTextWithLocalModel(text: string) {
   try {
-    // Initialize both models
-    const [piiranhaClassifier, bertClassifier] = await Promise.all([
-      initializePiiranhaModel().catch((error) => {
-        console.warn('Failed to initialize Piiranha model:', error);
-        return null;
-      }),
-      initializeBertModel().catch((error) => {
-        console.warn('Failed to initialize BERT model:', error);
-        return null;
-      })
-    ]);
-
-    // If no models loaded, fall back to basic pattern matching
-    if (!piiranhaClassifier && !bertClassifier) {
-      console.log('No ML models available, using basic pattern matching');
+    // Initialize the model using singleton pattern
+    const classifier = await initializeLocalModel();
+    
+    // Process text with the model
+    console.log('Processing text with local model');
+    const entities = await processTextWithModel(classifier, text);
+    console.log(`Local model found ${entities.length} entities`);
+    
+    // If no entities found, try basic pattern matching
+    if (entities.length === 0) {
+      console.log('No entities found with ML model, trying basic pattern matching');
       return performBasicPIIDetection(text);
     }
 
-    let piiranhaEntities: any[] = [];
-    let bertEntities: any[] = [];
-
-    // Process with PII model if available
-    if (piiranhaClassifier) {
-      try {
-        console.log('Processing text with PII model');
-        piiranhaEntities = await processTextWithModel(piiranhaClassifier, text);
-        console.log(`PII model found ${piiranhaEntities.length} entities`);
-      } catch (error) {
-        console.warn('Error processing text with PII model:', error);
-      }
-    } else {
-      console.log('No PII model available, using BERT model only');
-    }
-
-    // Process with BERT model if available
-    if (bertClassifier) {
-      try {
-        console.log('Processing text with BERT model');
-        bertEntities = await processTextWithModel(bertClassifier, text);
-        console.log(`BERT model found ${bertEntities.length} entities`);
-      } catch (error) {
-        console.warn('Error processing text with BERT model:', error);
-      }
-    }
-
-    let allEntities: any[] = [];
-
-    // If both models are available, combine their results
-    if (piiranhaClassifier && bertClassifier) {
-      console.log('Combining results from both models');
-      allEntities = combineModelResults(piiranhaEntities, bertEntities);
-    } else {
-      // Use results from whichever model is available
-      allEntities = [
-        ...piiranhaEntities,
-        ...bertEntities
-      ];
-    }
-
-    // If no entities found with ML models, try basic pattern matching
-    if (allEntities.length === 0) {
-      console.log('No entities found with ML models, trying basic pattern matching');
-      allEntities = performBasicPIIDetection(text);
-    }
-
     // Merge overlapping entities from different chunks
-    const mergedEntities = mergeEntities(allEntities);
+    const mergedEntities = mergeEntities(entities);
     
     return mergedEntities;
   } catch (error) {
@@ -362,5 +217,6 @@ function performBasicPIIDetection(text: string) {
 }
 
 export function isLocalModelAvailable(): boolean {
-  return piiranhaModel !== null || bertModel !== null;
+  const singleton = LocalModelSingleton.getInstance();
+  return singleton.isModelAvailable();
 }

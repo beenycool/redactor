@@ -1,36 +1,30 @@
 import React from 'react';
 
 interface ProcessingToggleProps {
-  processingType: 'remote' | 'local';
-  setProcessingType: (type: 'remote' | 'local') => void;
+  useLocalProcessing: boolean;
+  onToggle: (useLocal: boolean) => void;
 }
 
-export const ProcessingToggle: React.FC<ProcessingToggleProps> = ({ 
-  processingType, 
-  setProcessingType 
-}) => {
+export const ProcessingToggle: React.FC<ProcessingToggleProps> = ({ useLocalProcessing, onToggle }) => {
   return (
-    <div className="mb-6">
-      <div className="inline-flex rounded-md shadow-sm" role="group">
+    <div>
+      <label className="text-xs font-medium text-gray-600">Processing Mode</label>
+      <div className="flex items-center gap-2 mt-1">
         <button
-          onClick={() => setProcessingType('remote')}
-          className={`px-4 py-2 text-sm font-medium rounded-l-lg border ${
-            processingType === 'remote'
-              ? 'bg-blue-600 text-white border-blue-600'
-              : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-100'
+          onClick={() => onToggle(false)}
+          className={`px-2 py-1 text-xs rounded transition-colors ${
+            !useLocalProcessing ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'
           }`}
         >
-          Remote Processing
+          API
         </button>
         <button
-          onClick={() => setProcessingType('local')}
-          className={`px-4 py-2 text-sm font-medium rounded-r-md border ${
-            processingType === 'local'
-              ? 'bg-blue-600 text-white border-blue-600'
-              : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-100'
+          onClick={() => onToggle(true)}
+          className={`px-2 py-1 text-xs rounded transition-colors ${
+            useLocalProcessing ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'
           }`}
         >
-          Local Processing
+          Local
         </button>
       </div>
     </div>

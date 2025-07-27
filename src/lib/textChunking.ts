@@ -100,23 +100,48 @@ export function adjustEntityPositions(entities: any[], chunkOffset: number): any
 }
 
 /**
- * Merges overlapping entities from different chunks.
+ * Merges overlapping entities from different chunks using a greedy interval merging algorithm.
  * @param entities Array of entities from all chunks
- * @returns Array of unique entities with overlaps removed
+ * @returns Array of merged entities with overlaps resolved
  */
 export function mergeEntities(entities: any[]): any[] {
+  if (entities.length === 0) return [];
+  
   // Sort entities by start position
   const sortedEntities = [...entities].sort((a, b) => a.start - b.start);
   
-  // Remove duplicates based on overlapping positions
-  const uniqueEntities = sortedEntities.filter((entity, index, arr) => {
-    return !arr.some((other, otherIndex) => {
-      if (index > otherIndex) return false;
-      return (entity.start >= other.start && entity.start < other.end) ||
-             (entity.end > other.start && entity.end <= other.end) ||
-             (entity.start <= other.start && entity.end >= other.end);
-    });
-  });
+  // Merge overlapping entities using greedy algorithm
+  const mergedEntities: any[] = [];
+  let currentEntity = { ...sortedEntities[0] };
   
-  return uniqueEntities;
+  for (let i = 1; i < sortedEntities.length; i++) {
+    const nextEntity = sortedEntities[i];
+    
+    // Check if entities overlap or are adjacent
+    if (nextEntity.start <= currentEntity.end) {
+      // Overlap detected - merge entities
+      // Take the union of their spans
+      currentEntity.start = Math.min(currentEntity.start, nextEntity.start);
+      currentEntity.end = Math.max(currentEntity.end, nextEntity.end);
+      
+      // Take the entity with higher score as the primary
+      if (nextEntity.score > currentEntity.score) {
+        currentEntity.entity_group = nextEntity.entity_group;
+        currentEntity.word = nextEntity.word;
+        currentEntity.score = nextEntity.score;
+      } else {
+        // Keep current entity but boost score slightly for consensus
+        currentEntity.score = Math.min(1.0, currentEntity.score + 0.05);
+      }
+    } else {
+      // No overlap - add current entity to result and move to next
+      mergedEntities.push(currentEntity);
+      currentEntity = { ...nextEntity };
+    }
+  }
+  
+  // Add the last entity
+  mergedEntities.push(currentEntity);
+  
+  return mergedEntities;
 }
