@@ -50,6 +50,19 @@ export function validateTokens(tokens: any[]): tokens is RedactionToken[] {
  */
 export function tokensToJson(tokens: RedactionToken[], pretty = true): string {
   const batched = batchTokensByType(tokens);
+  
+  // Transform the batched tokens to include the redaction token value
+  const transformedBatched = Object.keys(batched).reduce((acc, type) => {
+    acc[type] = batched[type].map(token => ({
+      id: token.id,
+      type: token.type,
+      value: token.value,  // This is the redaction token (e.g., <PII_NAME_1>)
+      original: token.original,
+      position: token.position
+    }));
+    return acc;
+  }, {} as Record<string, any[]>);
+  
   const output = {
     summary: {
       totalTokens: tokens.length,
@@ -58,7 +71,7 @@ export function tokensToJson(tokens: RedactionToken[], pretty = true): string {
         return acc;
       }, {} as Record<string, number>)
     },
-    tokens: batched
+    tokens: transformedBatched
   };
   
   return JSON.stringify(output, null, pretty ? 2 : 0);

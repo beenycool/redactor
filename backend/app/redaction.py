@@ -85,22 +85,60 @@ class PIIRedactor:
     
     def _generate_redaction_token(self, entity_type: str) -> str:
         """
-        Generate a unique redaction token for an entity type
+        Generate a unique descriptive redaction token for an entity type
         
         Args:
             entity_type: Type of entity
             
         Returns:
-            Unique redaction token
+            Descriptive redaction token
         """
         # Clean entity type (remove B- or I- prefixes)
         clean_type = entity_type.replace('B-', '').replace('I-', '').upper()
         
-        if clean_type not in self.token_counter:
-            self.token_counter[clean_type] = 0
+        # Map entity types to more descriptive names
+        type_mapping = {
+            'GIVENNAME': 'NAME',
+            'SURNAME': 'NAME', 
+            'PERSON': 'NAME',
+            'PERSONTYPE': 'PERSON_TYPE',
+            'NORP': 'NATIONALITY',
+            'FAC': 'FACILITY',
+            'ORG': 'ORGANIZATION',
+            'GPE': 'LOCATION',
+            'LOC': 'LOCATION',
+            'PRODUCT': 'PRODUCT',
+            'EVENT': 'EVENT',
+            'WORK_OF_ART': 'ARTWORK',
+            'LAW': 'LEGAL_REFERENCE',
+            'LANGUAGE': 'LANGUAGE',
+            'DATE': 'DATE',
+            'TIME': 'TIME',
+            'PERCENT': 'PERCENTAGE',
+            'MONEY': 'MONETARY_AMOUNT',
+            'QUANTITY': 'QUANTITY',
+            'ORDINAL': 'ORDINAL_NUMBER',
+            'CARDINAL': 'NUMBER',
+            'SSN': 'SSN',
+            'PHONE': 'PHONE_NUMBER',
+            'EMAIL': 'EMAIL_ADDRESS',
+            'ADDRESS': 'ADDRESS',
+            'CASE_NUMBER': 'CASE_NUMBER',
+            'COURT_ID': 'COURT_ID',
+            'DRIVER_LICENSE': 'DRIVER_LICENSE',
+            'BADGE_NUMBER': 'BADGE_NUMBER',
+            'NATIONAL_INSURANCE': 'NATIONAL_INSURANCE',
+            'UK_POSTCODE': 'POSTCODE'
+        }
         
-        self.token_counter[clean_type] += 1
-        return f"<PII_{clean_type}_{self.token_counter[clean_type]}>"
+        # Use mapped type if available, otherwise use the clean type
+        descriptive_type = type_mapping.get(clean_type, clean_type)
+        
+        if descriptive_type not in self.token_counter:
+            self.token_counter[descriptive_type] = 0
+        
+        self.token_counter[descriptive_type] += 1
+        return f"<PII_{descriptive_type}_{self.token_counter[descriptive_type]}>"
     
     def _detect_pii_in_chunk(self, text: str, chunk_offset: int = 0) -> List[Dict[str, Any]]:
         """
@@ -300,13 +338,15 @@ class PIIRedactor:
         # Create token mappings for API response
         token_mappings = []
         for entity in entities:
-            token_mappings.append({
-                'token': entity['token'],
-                'value': entity['value'],
-                'type': entity['type'],
-                'start': entity['start'],
-                'end': entity['end']
-            })
+            # Ensure we have valid values - skip entities with empty values
+            if entity['value'].strip():
+                token_mappings.append({
+                    'token': entity['token'],
+                    'value': entity['value'].strip(),
+                    'type': entity['type'],
+                    'start': entity['start'],
+                    'end': entity['end']
+                })
         
         return redacted_text, token_mappings
     
