@@ -194,15 +194,13 @@ export default function Home() {
 
           {/* Bottom Right - LLM Output / Restored Text */}
           <div className="h-[400px]">
-            <div className="mb-2">
-              <TextBox
-                title="LLM Output (Paste redacted text here)"
-                content={llmOutput}
-                onChange={handleLlmOutputChange}
-                placeholder="Paste the redacted text from LLM here to restore original values..."
-                loading={isRestoring}
-              />
-            </div>
+            <TextBox
+              title="LLM Output (Paste redacted text here)"
+              content={llmOutput}
+              onChange={handleLlmOutputChange}
+              placeholder="Paste the redacted text from LLM here to restore original values..."
+              loading={isRestoring}
+            />
             {restoredText && (
               <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded">
                 <h4 className="font-semibold text-green-800 mb-1">Restored Text:</h4>

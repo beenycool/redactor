@@ -50,14 +50,28 @@ class RedactionService {
         text,
       });
       
+      // Log the raw response for debugging
+      console.log('Raw backend response:', response.data);
+      
       // Transform backend tokens to frontend format
-      const tokens: RedactionToken[] = response.data.tokens.map((token, index) => ({
-        id: index + 1,
-        type: token.type,
-        value: token.token,  // The redaction placeholder
-        original: token.value,  // The original value
-        position: token.start
-      }));
+      const tokens: RedactionToken[] = response.data.tokens.map((token, index) => {
+        // Log each token transformation
+        console.log(`Mapping token ${index}:`, {
+          backend_token: token.token,
+          backend_value: token.value,
+          backend_type: token.type
+        });
+        
+        return {
+          id: index + 1,
+          type: token.type,
+          value: token.token,  // The redaction placeholder (e.g., <PII_PERSON_1>)
+          original: token.value,  // The original value
+          position: token.start
+        };
+      });
+      
+      console.log('Mapped tokens:', tokens);
       
       return {
         redactedText: response.data.redacted_text,
@@ -65,6 +79,11 @@ class RedactionService {
       };
     } catch (error) {
       console.error('Error redacting text:', error);
+      // If it's an axios error, log more details
+      if ((error as any).response) {
+        console.error('Response data:', (error as any).response.data);
+        console.error('Response status:', (error as any).response.status);
+      }
       throw new Error('Failed to redact text. Please try again.');
     }
   }

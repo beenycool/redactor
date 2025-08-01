@@ -145,32 +145,34 @@ class PIIRedactor:
             label_id = predictions[i].item()
             
             # Get the 'O' label ID from model's label2id mapping
-            o_label_id = self.model.config.label2id.get('O')
-            if o_label_id is None:
-                # Handle case where 'O' label is not present in model configuration
-                # This is unusual but possible - log warning and skip processing
-                import warnings
-                warnings.warn("'O' label not found in model configuration, skipping token classification")
-                continue
+            o_label_id = self.model.config.label2id.get('O', 17)  # Default to 17 based on model inspection
             
             if label_id != o_label_id:  # Not 'O' label
                 label = self.model.config.id2label[label_id]
                 
-                # Extract entity value
+                # Extract entity value - handle whitespace properly
                 entity_text = text[start:end]
                 
-                # Check if this is continuation of previous entity
-                if current_entity and label.startswith('I-'):
+                # Remove 'I-' prefix (this model only uses I- labels)
+                entity_type = label.replace('I-', '')
+                
+                # Check if this is continuation of previous entity of same type
+                if (current_entity and
+                    current_entity['type'] == entity_type and
+                    start <= current_entity['end'] + 1):  # Allow for single space gap
                     # Extend current entity
                     current_entity['end'] = end + chunk_offset
-                    current_entity['value'] += ' ' + entity_text
+                    # Properly handle the text between entities
+                    gap_text = text[current_entity['end'] - chunk_offset:start]
+                    current_entity['value'] += gap_text + entity_text
                 else:
                     # Save previous entity if exists
                     if current_entity:
+                        # Clean up entity value
+                        current_entity['value'] = current_entity['value'].strip()
                         entities.append(current_entity)
                     
                     # Start new entity
-                    entity_type = label.replace('B-', '').replace('I-', '')
                     current_entity = {
                         'value': entity_text,
                         'type': entity_type,
@@ -181,11 +183,14 @@ class PIIRedactor:
             else:
                 # End of entity
                 if current_entity:
+                    # Clean up entity value
+                    current_entity['value'] = current_entity['value'].strip()
                     entities.append(current_entity)
                     current_entity = None
         
         # Don't forget last entity
         if current_entity:
+            current_entity['value'] = current_entity['value'].strip()
             entities.append(current_entity)
         
         return entities
@@ -350,9 +355,22 @@ class EnhancedPIIRedactor(PIIRedactor):
         
         # Additional regex patterns for court-specific PII
         self.patterns = {
+            'PERSON': re.compile(
+                # Match full names with optional middle initials/names
+                r'\b(?:'
+                # Title + Name patterns (require at least first and last name)
+                r'(?:Mr\.?|Mrs\.?|Ms\.?|Dr\.?|Prof\.?|Judge|Officer|PC|Detective|Sergeant|Captain|Lieutenant)\s+'
+                r'[A-Z][a-z]+(?:\s+[A-Z]\.?)?\s+[A-Z][a-z]+|'
+                # First Middle Last patterns
+                r'[A-Z][a-z]+\s+[A-Z]\.\s+[A-Z][a-z]+|'
+                # First Last patterns (but exclude common non-name patterns)
+                r'(?!Letter\s+Ref|National\s+Insurance|Westminster\s+Magistrates|NHS\s+Letter|Dart\s+&)'
+                r'[A-Z][a-z]+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?'
+                r')\b'
+            ),
             'CASE_NUMBER': re.compile(
                 r'\b(?:Case|Docket|File)\s*(?:No\.?|Number|#|ID)?\s*:?\s*'
-                r'[A-Z0-9]{2,}-(?:CR|CV|DR|PR)-[0-9]{2,}(?:-[A-Z0-9]+)?\b',
+                r'[A-Z0-9]{2,}(?:[-/][A-Z0-9]+)*\b',
                 re.IGNORECASE
             ),
             'COURT_ID': re.compile(
@@ -374,6 +392,25 @@ class EnhancedPIIRedactor(PIIRedactor):
                 r'\b(?:Badge|Officer)\s+(?:No\.?|Number)\s*:?\s*'
                 r'[A-Z0-9]{4,}\b',
                 re.IGNORECASE
+            ),
+            'NATIONAL_INSURANCE': re.compile(
+                r'\b[A-Z]{2}\s*\d{2}\s*\d{2}\s*\d{2}\s*[A-Z]\b',
+                re.IGNORECASE
+            ),
+            'UK_POSTCODE': re.compile(
+                r'\b[A-Z]{1,2}\d{1,2}[A-Z]?\s*\d[A-Z]{2}\b',
+                re.IGNORECASE
+            ),
+            'PHONE': re.compile(
+                r'\b(?:\+44\s*|0)(?:\d{4}\s*\d{6}|\d{3}\s*\d{3}\s*\d{4}|\d{5}\s*\d{6})\b'
+            ),
+            'EMAIL': re.compile(
+                r'\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b'
+            ),
+            'ADDRESS': re.compile(
+                r'\b(?:Flat|Apartment|Suite|Unit)\s*\d+[A-Z]?\s*,?\s*\d+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+'
+                r'(?:Street|St|Road|Rd|Avenue|Ave|Lane|Ln|Drive|Dr|Court|Ct|Place|Pl|Boulevard|Blvd)\b',
+                re.IGNORECASE
             )
         }
     
@@ -389,25 +426,72 @@ class EnhancedPIIRedactor(PIIRedactor):
             matches = pattern.finditer(text)
             for match in matches:
                 start, end = match.span()
+                match_text = match.group()
                 
-                # Check if this region is already covered
-                covered = any(
-                    e['start'] <= start < e['end'] or e['start'] < end <= e['end']
-                    for e in entities
-                )
+                # Skip common non-PII phrases
+                if pattern_type == 'PERSON':
+                    # Skip if it's a common title without a following name
+                    if match_text.lower() in ['mr', 'mrs', 'ms', 'dr', 'prof']:
+                        continue
+                    # Skip single words that might be common nouns
+                    if ' ' not in match_text and match_text.lower() in ['case', 'court', 'letter', 'ref']:
+                        continue
+                    # Skip known false positives
+                    if match_text in ['Letter Ref', 'National Insurance', 'Westminster Magistrates',
+                                      'Dart & Knight', 'Knight LLP', 'NHS Letter']:
+                        continue
+                
+                # Check if this region is already covered by a model-detected entity
+                covered = False
+                for e in entities:
+                    # Check for overlap
+                    if (e['start'] <= start < e['end'] or
+                        e['start'] < end <= e['end'] or
+                        start <= e['start'] < end or
+                        start < e['end'] <= end):
+                        # If pattern match is larger, replace the model entity
+                        if end - start > e['end'] - e['start']:
+                            entities.remove(e)
+                        else:
+                            covered = True
+                            break
                 
                 if not covered:
                     redaction_token = self._generate_redaction_token(pattern_type)
                     entities.append({
                         'token': redaction_token,
-                        'value': match.group(),
+                        'value': match_text,
                         'type': pattern_type,
                         'start': start,
                         'end': end,
                         'score': 1.0  # Pattern matches have high confidence
                     })
         
-        # Re-sort by position
-        entities.sort(key=lambda x: x['start'])
+        # Remove duplicates and merge overlapping entities
+        filtered_entities = []
+        entities.sort(key=lambda x: (x['start'], -x['end']))  # Sort by start, then by end (descending)
         
-        return entities
+        for entity in entities:
+            # Check if this entity overlaps with any already added entity
+            should_add = True
+            for i, existing in enumerate(filtered_entities):
+                # Check for overlap
+                if (entity['start'] < existing['end'] and entity['end'] > existing['start']):
+                    # Overlapping entities - keep the one with higher score or larger coverage
+                    entity_coverage = entity['end'] - entity['start']
+                    existing_coverage = existing['end'] - existing['start']
+                    
+                    if (entity['score'] > existing['score'] or
+                        (entity['score'] == existing['score'] and entity_coverage > existing_coverage)):
+                        # Replace existing with new entity
+                        filtered_entities[i] = entity
+                    should_add = False
+                    break
+            
+            if should_add:
+                filtered_entities.append(entity)
+        
+        # Re-sort by position
+        filtered_entities.sort(key=lambda x: x['start'])
+        
+        return filtered_entities

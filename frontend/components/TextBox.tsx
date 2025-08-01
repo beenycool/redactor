@@ -1,7 +1,4 @@
 import React from 'react';
-import ReactMarkdown from 'react-markdown';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { tomorrow } from 'react-syntax-highlighter/dist/cjs/styles/prism';
 
 interface TextBoxProps {
   title: string;
@@ -28,6 +25,17 @@ const TextBox: React.FC<TextBoxProps> = ({
     }
   };
 
+  // Function to highlight redacted tokens
+  const highlightRedactedText = (text: string) => {
+    if (!highlightRedactions) return text;
+    
+    // Replace <PII_TYPE_#> patterns with highlighted spans
+    // This matches patterns like <PII_PERSON_1>, <PII_EMAIL_1>, <PII_ADDRESS_1>, etc.
+    return text.replace(/<PII_[A-Z_]+_\d+>/g, (match) => {
+      return `<span class="redacted">${match}</span>`;
+    });
+  };
+
   return (
     <div className="flex flex-col h-full border border-gray-300 rounded-lg shadow-sm">
       <div className="bg-gray-100 px-4 py-2 border-b border-gray-300 flex justify-between items-center">
@@ -48,40 +56,19 @@ const TextBox: React.FC<TextBoxProps> = ({
         )}
         {readOnly ? (
           highlightRedactions ? (
-            <div className="prose max-w-none">
-              <ReactMarkdown
-                components={{
-                  code({ className, children, ...props }: React.ComponentPropsWithoutRef<'code'>) {
-                    const match = /language-(\w+)/.exec(className || '');
-                    return match ? (
-                      <SyntaxHighlighter
-                        style={tomorrow as any}
-                        language={match[1]}
-                        PreTag="div"
-                        {...props}
-                      >
-                        {String(children).replace(/\n$/, '')}
-                      </SyntaxHighlighter>
-                    ) : (
-                      <code className="bg-gray-100 px-1 py-0.5 rounded text-sm" {...props}>
-                        {children}
-                      </code>
-                    );
-                  },
-                }}
-              >
-                {content}
-              </ReactMarkdown>
-            </div>
+            <pre 
+              className="whitespace-pre-wrap font-mono text-sm text-gray-900"
+              dangerouslySetInnerHTML={{ __html: highlightRedactedText(content) }}
+            />
           ) : (
-            <pre className="whitespace-pre-wrap font-mono text-sm text-gray-900 dark:text-gray-100">{content}</pre>
+            <pre className="whitespace-pre-wrap font-mono text-sm text-gray-900">{content}</pre>
           )
         ) : (
           <textarea
             value={content}
             onChange={handleChange}
             placeholder={placeholder}
-            className="w-full h-full resize-none outline-none font-mono text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-900 placeholder-gray-500 dark:placeholder-gray-400"
+            className="w-full h-full resize-none outline-none font-mono text-sm text-gray-900 bg-white placeholder-gray-500"
           />
         )}
       </div>
