@@ -1,7 +1,28 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import TextBox from '../components/TextBox';
 import { redactionService, RedactionToken } from '../services/redactionService';
-import { tokensToJson, parseTokensFromJson } from '../utils/tokenUtils';
+import { tokensToJson, parseTokensFromJson, tokensByTypeCount } from '../utils/tokenUtils';
+import { getPIITypeClass } from '../components/PIIBadge';
+
+const SLIDER_MIN = 0.0;
+const SLIDER_MAX = 1.0;
+const SLIDER_STEP = 0.01;
+const DEFAULT_CONFIDENCE = 0.5;
+
+// Maximum history size to prevent memory issues
+const MAX_HISTORY_SIZE = 100;
+
+const SAMPLE_TEXTS = [
+  {
+    name: "Court Report",
+    text: "John Doe appeared before Judge Smith on Case No. 2024-CR-1234..."
+  },
+  {
+    name: "Medical Record",
+    text: "Patient Jane Smith, SSN 123-45-6789, visited on 01/15/2024..."
+  }
+  // Add more if desired
+];
 
 export default function Home() {
   const [originalText, setOriginalText] = useState('');
@@ -9,58 +30,137 @@ export default function Home() {
   const [tokensJson, setTokensJson] = useState('');
   const [restoredText, setRestoredText] = useState('');
   const [llmOutput, setLlmOutput] = useState('');
-  
+  // Confidence threshold state
+  const [confidenceThreshold, setConfidenceThreshold] = useState(DEFAULT_CONFIDENCE);
+
+  // Undo/Redo state history
+  type HistoryState = {
+    originalText: string;
+    redactedText: string;
+    tokensJson: string;
+    tokens: RedactionToken[];
+  };
+  const [history, setHistory] = useState<HistoryState[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1); // -1 means no history yet
+
+  // Helper to push new state to history
+  const pushHistory = useCallback((newState: HistoryState) => {
+    setHistory(prev => {
+      // If not at end, truncate future
+      const truncated = historyIndex >= 0 ? prev.slice(0, historyIndex + 1) : prev;
+      const updated = [...truncated, newState];
+      // Enforce maximum history size
+      if (updated.length > MAX_HISTORY_SIZE) {
+        // Remove oldest entries
+        return updated.slice(updated.length - MAX_HISTORY_SIZE);
+      }
+      return updated;
+    });
+    setHistoryIndex(idx => {
+      // If history was truncated, keep index at the end
+      const newLength = historyIndex >= 0 ? Math.min(historyIndex + 1, MAX_HISTORY_SIZE - 1) : 0;
+      return newLength;
+    });
+  }, [historyIndex]);
+
+  // Undo handler
+  const handleUndo = useCallback(() => {
+    if (historyIndex > 0) {
+      const prevState = history[historyIndex - 1];
+      setOriginalText(prevState.originalText);
+      setRedactedText(prevState.redactedText);
+      setTokensJson(prevState.tokensJson);
+      currentTokensRef.current = prevState.tokens;
+      setHistoryIndex(historyIndex - 1);
+    }
+  }, [history, historyIndex]);
+
+  // Redo handler
+  const handleRedo = useCallback(() => {
+    if (historyIndex < history.length - 1) {
+      const nextState = history[historyIndex + 1];
+      setOriginalText(nextState.originalText);
+      setRedactedText(nextState.redactedText);
+      setTokensJson(nextState.tokensJson);
+      currentTokensRef.current = nextState.tokens;
+      setHistoryIndex(historyIndex + 1);
+    }
+  }, [history, historyIndex]);
+
   // Loading states
   const [isRedacting, setIsRedacting] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
-  
+
   // Error states
   const [redactionError, setRedactionError] = useState('');
   const [restorationError, setRestorationError] = useState('');
-  
+
   // Store tokens for restoration
   const currentTokensRef = useRef<RedactionToken[]>([]);
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Debounced redaction function
-  const performRedaction = useCallback(async (text: string) => {
-    if (!text.trim()) {
-      setRedactedText('');
-      setTokensJson('');
-      currentTokensRef.current = [];
-      return;
-    }
-
-    setIsRedacting(true);
-    setRedactionError('');
-    
-    try {
-      const result = await redactionService.redactText(text);
-      setRedactedText(result.redactedText);
-      currentTokensRef.current = result.tokens;
-      setTokensJson(tokensToJson(result.tokens, true));
-    } catch (error) {
-      setRedactionError(error instanceof Error ? error.message : 'Failed to redact text');
-      console.error('Redaction error:', error);
-    } finally {
-      setIsRedacting(false);
-    }
-  }, []);
-
-  // Debounced handler for original text changes
-  const handleOriginalTextChange = useCallback((text: string) => {
-    setOriginalText(text);
-    
-    // Clear existing timer
+  // Local debounce helper
+  const resetDebounce = useCallback((callback: () => void, delay: number = 500) => {
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
     }
-    
-    // Set new timer for debounced API call
-    debounceTimerRef.current = setTimeout(() => {
-      performRedaction(text);
-    }, 500); // 500ms debounce delay
-  }, [performRedaction]);
+    debounceTimerRef.current = setTimeout(callback, delay);
+  }, []);
+
+    // Debounced redaction function
+    const performRedaction = useCallback(
+      async (text: string, threshold: number = confidenceThreshold, recordHistory: boolean = true) => {
+        if (!text.trim()) {
+          setRedactedText('');
+          setTokensJson('');
+          currentTokensRef.current = [];
+          if (recordHistory) {
+            pushHistory({
+              originalText: '',
+              redactedText: '',
+              tokensJson: '',
+              tokens: [],
+            });
+          }
+          return;
+        }
+  
+        setIsRedacting(true);
+        setRedactionError('');
+  
+        try {
+          const result = await redactionService.redactText(text, threshold);
+          setRedactedText(result.redactedText);
+          currentTokensRef.current = result.tokens;
+          setTokensJson(tokensToJson(result.tokens, true));
+          if (recordHistory) {
+            pushHistory({
+              originalText: text,
+              redactedText: result.redactedText,
+              tokensJson: tokensToJson(result.tokens, true),
+              tokens: result.tokens,
+            });
+          }
+        } catch (error) {
+          setRedactionError(error instanceof Error ? error.message : 'Failed to redact text');
+          console.error('Redaction error:', error);
+        } finally {
+          setIsRedacting(false);
+        }
+      },
+      [confidenceThreshold, pushHistory]
+    );
+
+    // Debounced handler for original text changes
+    const handleOriginalTextChange = useCallback(
+      (text: string) => {
+        setOriginalText(text);
+        resetDebounce(() => {
+          performRedaction(text, confidenceThreshold, true);
+        });
+      },
+      [performRedaction, confidenceThreshold, resetDebounce]
+    );
 
   // Perform restoration when LLM output changes
   const performRestoration = useCallback(async (text: string) => {
@@ -86,35 +186,109 @@ export default function Home() {
   // Debounced handler for LLM output changes
   const handleLlmOutputChange = useCallback((text: string) => {
     setLlmOutput(text);
-    
-    // Clear existing timer
-    if (debounceTimerRef.current) {
-      clearTimeout(debounceTimerRef.current);
-    }
-    
-    // Set new timer for debounced API call
-    debounceTimerRef.current = setTimeout(() => {
+    resetDebounce(() => {
       performRestoration(text);
-    }, 500); // 500ms debounce delay
-  }, [performRestoration]);
+    });
+  }, [performRestoration, resetDebounce]);
 
-  // Clear all fields
-  const handleClearAll = () => {
-    setOriginalText('');
-    setRedactedText('');
-    setTokensJson('');
-    setRestoredText('');
-    setLlmOutput('');
-    setRedactionError('');
-    setRestorationError('');
-    currentTokensRef.current = [];
-  };
+    // Clear all fields
+    const handleClearAll = () => {
+      setOriginalText('');
+      setRedactedText('');
+      setTokensJson('');
+      setRestoredText('');
+      setLlmOutput('');
+      setRedactionError('');
+      setRestorationError('');
+      currentTokensRef.current = [];
+      setHistory([]);
+      setHistoryIndex(-1);
+    };
 
   // Copy redacted text to LLM output box
   const handleCopyToLlm = () => {
     setLlmOutput(redactedText);
     performRestoration(redactedText);
   };
+
+  // Quick Action Handlers
+  const [toastMessage, setToastMessage] = useState('');
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const toastTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const showToast = useCallback((msg: string) => {
+    setToastMessage(msg);
+    if (toastTimeoutRef.current) {
+      clearTimeout(toastTimeoutRef.current);
+    }
+    toastTimeoutRef.current = setTimeout(() => {
+      setToastMessage('');
+      toastTimeoutRef.current = null;
+    }, 2000);
+  }, []);
+
+  const handleCopyRedacted = useCallback(() => {
+      if (!redactedText) {
+        showToast('Nothing to copy');
+        return;
+      }
+      if (
+        typeof navigator !== 'undefined' &&
+        navigator.clipboard &&
+        typeof navigator.clipboard.writeText === 'function'
+      ) {
+        navigator.clipboard.writeText(redactedText)
+          .then(() => showToast('Copied to clipboard!'))
+          .catch(() => showToast('Failed to copy'));
+      } else {
+        showToast('Clipboard functionality not supported');
+      }
+    }, [redactedText, showToast]);
+
+  const handleDownloadTokens = useCallback(() => {
+    try {
+      const blob = new Blob([tokensJson || '[]'], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `redaction-tokens-${Date.now()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      showToast('Tokens downloaded');
+    } catch {
+      showToast('Failed to download tokens');
+    }
+  }, [tokensJson, showToast]);
+
+  const handleImportTokens = useCallback((file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const text = String(reader.result || '');
+        const parsed = parseTokensFromJson(text);
+        if (!parsed || !Array.isArray(parsed) || parsed.length === 0) {
+          showToast('No tokens found in file');
+          return;
+        }
+        // Apply imported tokens to current session
+        currentTokensRef.current = parsed as RedactionToken[];
+        setTokensJson(tokensToJson(parsed as RedactionToken[], true));
+        showToast('Tokens imported');
+      } catch (e) {
+        console.error('Failed to import tokens', e);
+        showToast('Invalid tokens file');
+      }
+    };
+    reader.onerror = () => showToast('Failed to read file');
+    reader.readAsText(file);
+  }, [showToast]);
+
+  const handleOpenFileDialog = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
 
   // Check API health on mount
   useEffect(() => {
@@ -132,6 +306,71 @@ export default function Home() {
     checkApiHealth();
   }, []);
 
+  // Cleanup any pending debounce timers and toast timeout on unmount to prevent memory leaks
+  useEffect(() => {
+    return () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+      }
+      if (toastTimeoutRef.current) {
+        clearTimeout(toastTimeoutRef.current);
+        toastTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
+    // Keyboard shortcuts
+    // Ctrl/Cmd+Enter: perform redaction
+    // Ctrl/Cmd+D: clear all
+    // Ctrl/Cmd+C: copy redacted
+    // Ctrl/Cmd+Z: undo, Ctrl/Cmd+Y: redo
+    useEffect(() => {
+      const handleKeyDown = (e: KeyboardEvent) => {
+        if (!(e.ctrlKey || e.metaKey)) return;
+  
+        // Avoid interfering while typing in inputs except when triggering explicit combos
+        const key = e.key;
+        switch (key) {
+          case 'Enter': {
+            e.preventDefault();
+            performRedaction(originalText, confidenceThreshold);
+            break;
+          }
+          case 'd':
+          case 'D': {
+            e.preventDefault();
+            handleClearAll();
+            break;
+          }
+          case 'c':
+          case 'C': {
+            e.preventDefault();
+            // Use existing handler which shows toast feedback
+            handleCopyRedacted();
+            break;
+          }
+          case 'z':
+          case 'Z': {
+            e.preventDefault();
+            handleUndo();
+            break;
+          }
+          case 'y':
+          case 'Y': {
+            e.preventDefault();
+            handleRedo();
+            break;
+          }
+          default:
+            break;
+        }
+      };
+  
+      window.addEventListener('keydown', handleKeyDown);
+      return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [originalText, performRedaction, handleCopyRedacted, confidenceThreshold, historyIndex, history, handleUndo, handleRedo, handleClearAll]);
+
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">
       <main className="flex-1 container mx-auto px-4 py-8">
@@ -142,6 +381,25 @@ export default function Home() {
           <p className="text-gray-600">
             Enter your text to redact sensitive information automatically
           </p>
+          {/* Confidence Threshold Slider */}
+          <div className="mt-4 flex items-center gap-4">
+            <label htmlFor="confidence-threshold" className="text-sm font-medium text-gray-700">
+              Confidence Threshold:
+            </label>
+            <input
+              id="confidence-threshold"
+              type="range"
+              min={SLIDER_MIN}
+              max={SLIDER_MAX}
+              step={SLIDER_STEP}
+              value={confidenceThreshold}
+              onChange={e => setConfidenceThreshold(Number(e.target.value))}
+              className="w-48"
+            />
+            <span className="text-sm text-gray-800 font-semibold">
+              {(confidenceThreshold * 100).toFixed(0)}%
+            </span>
+          </div>
         </div>
 
         {/* Error messages */}
@@ -154,6 +412,28 @@ export default function Home() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Top Left - Original Text Input */}
           <div className="h-[400px]">
+            {/* Sample Text Dropdown */}
+            <div className="mb-2 flex items-center gap-2">
+              <label htmlFor="sample-text-select" className="text-sm font-medium text-gray-700">
+                Load Sample Text:
+              </label>
+              <select
+                id="sample-text-select"
+                className="px-2 py-1 border rounded text-sm"
+                defaultValue=""
+                onChange={e => {
+                  const idx = e.target.value;
+                  if (idx !== "") {
+                    setOriginalText(SAMPLE_TEXTS[Number(idx)].text);
+                  }
+                }}
+              >
+                <option value="">Select a sample...</option>
+                {SAMPLE_TEXTS.map((sample, i) => (
+                  <option key={sample.name} value={i}>{sample.name}</option>
+                ))}
+              </select>
+            </div>
             <TextBox
               title="Original Text"
               content={originalText}
@@ -162,6 +442,11 @@ export default function Home() {
               loading={isRedacting}
             />
           </div>
+          {isRedacting && originalText.length > 5000 && (
+            <div className="text-sm text-gray-600 mt-2">
+              Processing large text... This may take a moment.
+            </div>
+          )}
 
           {/* Top Right - Redacted Text Output */}
           <div className="h-[400px]">
@@ -180,6 +465,22 @@ export default function Home() {
                 Copy to LLM Output →
               </button>
             )}
+            {/* Redaction Summary Panel */}
+            {currentTokensRef.current.length > 0 && (
+              <div className="mt-4 p-3 bg-gray-50 rounded">
+                <h4 className="font-semibold mb-2">Redaction Summary</h4>
+                <div className="flex gap-2 flex-wrap">
+                  {Object.entries(tokensByTypeCount(currentTokensRef.current)).map(([type, count]) => (
+                    <span
+                      key={type}
+                      className={`px-2 py-1 rounded text-sm ${getPIITypeClass(type)}`}
+                    >
+                      {type}: {count}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Bottom Left - Tokens JSON Output */}
@@ -190,6 +491,21 @@ export default function Home() {
               readOnly={true}
               highlightRedactions={true}
             />
+            <div className="mt-4 flex gap-4">
+              <button
+                onClick={handleDownloadTokens}
+                disabled={!tokensJson}
+                className={`px-4 py-2 rounded bg-blue-500 text-white font-semibold hover:bg-blue-600 transition-colors text-sm ${!tokensJson ? 'opacity-50 cursor-not-allowed' : ''}`}
+              >
+                Export Tokens
+              </button>
+              <button
+                onClick={handleOpenFileDialog}
+                className="px-4 py-2 rounded bg-green-500 text-white font-semibold hover:bg-green-600 transition-colors text-sm"
+              >
+                Import Tokens
+              </button>
+            </div>
           </div>
 
           {/* Bottom Right - LLM Output / Restored Text */}
@@ -213,6 +529,20 @@ export default function Home() {
         {/* Action Buttons */}
         <div className="mt-6 flex gap-4 justify-center">
           <button
+            onClick={handleUndo}
+            disabled={historyIndex <= 0}
+            className={`px-6 py-3 bg-yellow-500 text-white font-semibold rounded-lg hover:bg-yellow-600 transition-colors ${historyIndex <= 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
+          >
+            Undo
+          </button>
+          <button
+            onClick={handleRedo}
+            disabled={historyIndex >= history.length - 1}
+            className={`px-6 py-3 bg-green-500 text-white font-semibold rounded-lg hover:bg-green-600 transition-colors ${historyIndex >= history.length - 1 ? 'opacity-50 cursor-not-allowed' : ''}`}
+          >
+            Redo
+          </button>
+          <button
             onClick={handleClearAll}
             className="px-6 py-3 bg-gray-600 text-white font-semibold rounded-lg hover:bg-gray-700 transition-colors"
           >
@@ -231,6 +561,16 @@ export default function Home() {
             <li>Paste the LLM's output in the "LLM Output" box to restore original values</li>
           </ol>
         </div>
+        {/* Hidden file input for importing tokens */}
+        <input
+          type="file"
+          ref={fileInputRef}
+          style={{ display: 'none' }}
+          onChange={e => {
+            const file = e.target.files?.[0];
+            if (file) handleImportTokens(file);
+          }}
+        />
       </main>
     </div>
   );

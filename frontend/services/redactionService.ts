@@ -1,7 +1,8 @@
-import axios from 'axios';
+import axios, { AxiosError } from 'axios';
 
 // Base URL for the API - will be configured from environment variables
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const DEBUG = process.env.NEXT_PUBLIC_DEBUG === 'true' || process.env.NODE_ENV === 'development';
 
 // Type definitions for API responses
 export interface BackendToken {
@@ -29,6 +30,21 @@ export interface RestorationResponse {
   restored_text: string;
 }
 
+// Helper function for logging axios errors
+function logAxiosError(error: AxiosError, context: string): void {
+  if (!DEBUG) return;
+  
+  console.error(`[${context}] Axios error:`, {
+    message: error.message,
+    status: error.response?.status,
+    statusText: error.response?.statusText,
+    url: error.config?.url,
+    method: error.config?.method,
+    responseData: error.response?.data,
+    requestData: error.config?.data
+  });
+}
+
 // Service class for redaction operations
 class RedactionService {
   private apiClient = axios.create({
@@ -42,17 +58,23 @@ class RedactionService {
   /**
    * Redact sensitive information from text
    * @param text - The original text to redact
+   * @param confidenceThreshold - Minimum confidence threshold for PII detection (0.0–1.0)
    * @returns Promise containing redacted text and tokens
    */
-  async redactText(text: string): Promise<{ redactedText: string; tokens: RedactionToken[] }> {
+  async redactText(
+    text: string,
+    confidenceThreshold?: number
+  ): Promise<{ redactedText: string; tokens: RedactionToken[] }> {
     try {
-      const response = await this.apiClient.post<RedactionResponse>('/redact', {
-        text,
-      });
-      
+      const payload: Record<string, any> = { text };
+      if (typeof confidenceThreshold === 'number') {
+        payload.confidence_threshold = confidenceThreshold;
+      }
+      const response = await this.apiClient.post<RedactionResponse>('/redact', payload);
+
       // Log the raw response for debugging
       console.log('Raw backend response:', response.data);
-      
+
       // Transform backend tokens to frontend format
       const tokens: RedactionToken[] = response.data.tokens.map((token, index) => {
         // Log each token transformation
@@ -61,7 +83,7 @@ class RedactionService {
           backend_value: token.value,
           backend_type: token.type
         });
-        
+
         return {
           id: index + 1,
           type: token.type,
@@ -70,19 +92,18 @@ class RedactionService {
           position: token.start
         };
       });
-      
+
       console.log('Mapped tokens:', tokens);
-      
+
       return {
         redactedText: response.data.redacted_text,
         tokens
       };
     } catch (error) {
-      console.error('Error redacting text:', error);
-      // If it's an axios error, log more details
-      if ((error as any).response) {
-        console.error('Response data:', (error as any).response.data);
-        console.error('Response status:', (error as any).response.status);
+      if (axios.isAxiosError(error)) {
+        logAxiosError(error, 'redactText');
+      } else {
+        console.error('Error redacting text:', error);
       }
       throw new Error('Failed to redact text. Please try again.');
     }
@@ -108,7 +129,11 @@ class RedactionService {
       });
       return response.data.restored_text;
     } catch (error) {
-      console.error('Error restoring text:', error);
+      if (axios.isAxiosError(error)) {
+        logAxiosError(error, 'restoreText');
+      } else {
+        console.error('Error restoring text:', error);
+      }
       throw new Error('Failed to restore text. Please try again.');
     }
   }
@@ -122,7 +147,11 @@ class RedactionService {
       const response = await this.apiClient.get('/health');
       return response.status === 200;
     } catch (error) {
-      console.error('API health check failed:', error);
+      if (axios.isAxiosError(error)) {
+        logAxiosError(error, 'checkHealth');
+      } else {
+        console.error('API health check failed:', error);
+      }
       return false;
     }
   }

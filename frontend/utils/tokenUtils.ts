@@ -2,8 +2,7 @@ import { RedactionToken } from '../services/redactionService';
 
 /**
  * Batch tokens by type for easier processing and display
- * @param tokens - Array of redaction tokens
- * @returns Object with tokens grouped by type
+ * Note: Frontend no longer performs restoration using token positions.
  */
 export function batchTokensByType(tokens: RedactionToken[]): Record<string, RedactionToken[]> {
   return tokens.reduce((acc, token) => {
@@ -16,23 +15,13 @@ export function batchTokensByType(tokens: RedactionToken[]): Record<string, Reda
 }
 
 /**
- * Sort tokens by their position in the text
- * @param tokens - Array of redaction tokens
- * @returns Sorted array of tokens
- */
-export function sortTokensByPosition(tokens: RedactionToken[]): RedactionToken[] {
-  return [...tokens].sort((a, b) => a.position - b.position);
-}
-
-/**
- * Validate tokens array to ensure all required fields are present
- * @param tokens - Array to validate
- * @returns Boolean indicating if tokens are valid
+ * Validate tokens array to ensure all required fields are present.
+ * Position is retained only for display/debug purposes. Restoration is delegated to backend.
  */
 export function validateTokens(tokens: any[]): tokens is RedactionToken[] {
   if (!Array.isArray(tokens)) return false;
-  
-  return tokens.every(token => 
+
+  return tokens.every(token =>
     typeof token === 'object' &&
     typeof token.id === 'number' &&
     typeof token.type === 'string' &&
@@ -43,26 +32,22 @@ export function validateTokens(tokens: any[]): tokens is RedactionToken[] {
 }
 
 /**
- * Convert tokens to a formatted JSON string for display
- * @param tokens - Array of redaction tokens
- * @param pretty - Whether to pretty-print the JSON
- * @returns Formatted JSON string
+ * Convert tokens to a formatted JSON string for display and debugging.
  */
 export function tokensToJson(tokens: RedactionToken[], pretty = true): string {
   const batched = batchTokensByType(tokens);
-  
-  // Transform the batched tokens to include the redaction token value
+
   const transformedBatched = Object.keys(batched).reduce((acc, type) => {
     acc[type] = batched[type].map(token => ({
       id: token.id,
       type: token.type,
-      value: token.value,  // This is the redaction token (e.g., <PII_NAME_1>)
+      value: token.value,    // Redaction placeholder (e.g., <PII_NAME_1>)
       original: token.original,
       position: token.position
     }));
     return acc;
   }, {} as Record<string, any[]>);
-  
+
   const output = {
     summary: {
       totalTokens: tokens.length,
@@ -73,36 +58,32 @@ export function tokensToJson(tokens: RedactionToken[], pretty = true): string {
     },
     tokens: transformedBatched
   };
-  
+
   return JSON.stringify(output, null, pretty ? 2 : 0);
 }
 
 /**
- * Parse JSON string to extract tokens
- * @param jsonString - JSON string containing tokens
- * @returns Array of redaction tokens or null if invalid
+ * Parse JSON string to extract tokens.
  */
 export function parseTokensFromJson(jsonString: string): RedactionToken[] | null {
   try {
     const parsed = JSON.parse(jsonString);
-    
-    // Handle both flat array and nested structure
+
     let tokens: any[] = [];
     if (Array.isArray(parsed)) {
       tokens = parsed;
     } else if (parsed.tokens) {
-      // If tokens is an object grouped by type, flatten it
       if (!Array.isArray(parsed.tokens)) {
         tokens = Object.values(parsed.tokens).flat();
       } else {
         tokens = parsed.tokens;
       }
     }
-    
+
     if (validateTokens(tokens)) {
       return tokens;
     }
-    
+
     return null;
   } catch (error) {
     console.error('Error parsing tokens from JSON:', error);
@@ -111,12 +92,20 @@ export function parseTokensFromJson(jsonString: string): RedactionToken[] | null
 }
 
 /**
- * Calculate statistics for redaction tokens
- * @param tokens - Array of redaction tokens
- * @returns Statistics object
+ * Count tokens by type using batchTokensByType
+ */
+export function tokensByTypeCount(tokens: RedactionToken[]): Record<string, number> {
+  const batched = batchTokensByType(tokens);
+  return Object.keys(batched).reduce((acc, type) => {
+    acc[type] = batched[type].length;
+    return acc;
+  }, {} as Record<string, number>);
+}
+
+/**
+ * Token statistics utility (display-only).
  */
 export function calculateTokenStatistics(tokens: RedactionToken[]) {
-  // Handle empty tokens array
   if (!tokens || tokens.length === 0) {
     return {
       totalTokens: 0,
@@ -128,7 +117,7 @@ export function calculateTokenStatistics(tokens: RedactionToken[]) {
 
   const batched = batchTokensByType(tokens);
   const uniqueOriginals = new Set(tokens.map(t => t.original));
-  
+
   return {
     totalTokens: tokens.length,
     uniqueValues: uniqueOriginals.size,
@@ -143,31 +132,5 @@ export function calculateTokenStatistics(tokens: RedactionToken[]) {
   };
 }
 
-/**
- * Apply tokens to restore redacted text
- * @param redactedText - Text with redacted placeholders
- * @param tokens - Tokens containing original values
- * @returns Restored text
- */
-export function applyTokensToText(redactedText: string, tokens: RedactionToken[]): string {
-  let restoredText = redactedText;
-  
-  // Sort tokens by position in reverse order to avoid position shifts
-  const sortedTokens = sortTokensByPosition(tokens).reverse();
-  
-  sortedTokens.forEach(token => {
-    // Use position-based replacement instead of global regex
-    const start = token.position;
-    const end = start + token.value.length;
-    
-    // Verify the token value matches at the specified position
-    if (restoredText.substring(start, end) === token.value) {
-      restoredText =
-        restoredText.substring(0, start) +
-        token.original +
-        restoredText.substring(end);
-    }
-  });
-  
-  return restoredText;
-}
+// Note: Any restoration of redacted text must be performed via the backend restore endpoint.
+// The former position-based applyTokensToText() has been removed to prevent incorrect restoration.

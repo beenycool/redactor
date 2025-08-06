@@ -40,7 +40,7 @@ class PIIRedactor:
             logging.error(error_msg)
             raise RuntimeError(error_msg) from e
         
-        # Token counter for unique IDs
+        # Token counter per request is now provided at call sites; keep attribute for backward compatibility but unused in generation
         self.token_counter = {}
         
         # Maximum tokens per chunk (leaving room for special tokens)
@@ -83,23 +83,24 @@ class PIIRedactor:
         
         return chunks
     
-    def _generate_redaction_token(self, entity_type: str) -> str:
+    def _generate_redaction_token(self, entity_type: str, token_counter: Dict[str, int]) -> str:
         """
-        Generate a unique descriptive redaction token for an entity type
+        Generate a unique descriptive redaction token for an entity type using a request-scoped counter
         
         Args:
             entity_type: Type of entity
+            token_counter: Mutable dict used to count tokens for this single request
             
         Returns:
             Descriptive redaction token
         """
         # Clean entity type (remove B- or I- prefixes)
         clean_type = entity_type.replace('B-', '').replace('I-', '').upper()
-        
+
         # Map entity types to more descriptive names
         type_mapping = {
             'GIVENNAME': 'NAME',
-            'SURNAME': 'NAME', 
+            'SURNAME': 'NAME',
             'PERSON': 'NAME',
             'PERSONTYPE': 'PERSON_TYPE',
             'NORP': 'NATIONALITY',
@@ -130,15 +131,13 @@ class PIIRedactor:
             'NATIONAL_INSURANCE': 'NATIONAL_INSURANCE',
             'UK_POSTCODE': 'POSTCODE'
         }
-        
-        # Use mapped type if available, otherwise use the clean type
+
         descriptive_type = type_mapping.get(clean_type, clean_type)
-        
-        if descriptive_type not in self.token_counter:
-            self.token_counter[descriptive_type] = 0
-        
-        self.token_counter[descriptive_type] += 1
-        return f"<PII_{descriptive_type}_{self.token_counter[descriptive_type]}>"
+
+        # Use the provided per-request counter
+        count = token_counter.get(descriptive_type, 0) + 1
+        token_counter[descriptive_type] = count
+        return f"<PII_{descriptive_type}_{count}>"
     
     def _detect_pii_in_chunk(self, text: str, chunk_offset: int = 0) -> List[Dict[str, Any]]:
         """
@@ -233,28 +232,26 @@ class PIIRedactor:
         
         return entities
     
-    def detect_pii(self, text: str) -> List[Dict[str, Any]]:
+    def detect_pii(self, text: str, token_counter: Dict[str, int]) -> List[Dict[str, Any]]:
         """
         Detect PII entities in text with batching support
-        
+
         Args:
             text: Input text to analyze
-            
+            token_counter: Request-scoped token counter dict used for token generation
+
         Returns:
             List of detected PII entities with metadata
         """
-        # Reset token counter for each document
-        self.token_counter = {}
-        
         # Split text into chunks
         chunks = self._split_text_into_chunks(text)
-        
+
         all_entities = []
-        
+
         for chunk_text, chunk_offset in chunks:
             entities = self._detect_pii_in_chunk(chunk_text, chunk_offset)
             all_entities.extend(entities)
-        
+
         # Merge overlapping entities of the same type
         filtered_entities = []
         for entity in all_entities:
@@ -268,7 +265,7 @@ class PIIRedactor:
                     # Calculate merged span
                     merged_start = min(entity['start'], existing['start'])
                     merged_end = max(entity['end'], existing['end'])
-                    
+
                     # Create merged entity with highest score
                     merged_entity = {
                         'value': text[merged_start:merged_end],
@@ -277,7 +274,7 @@ class PIIRedactor:
                         'end': merged_end,
                         'score': max(entity['score'], existing['score'])
                     }
-                    
+
                     filtered_entities[i] = merged_entity
                     merged = True
                     break
@@ -289,31 +286,34 @@ class PIIRedactor:
                         filtered_entities[i] = entity
                     merged = True
                     break
-            
+
             if not merged:
                 filtered_entities.append(entity)
-        
+
         # Sort by position
         filtered_entities.sort(key=lambda x: x['start'])
-        
-        # Generate redaction tokens
+
+        # Generate redaction tokens using the request-scoped counter
         for entity in filtered_entities:
-            entity['token'] = self._generate_redaction_token(entity['type'])
-        
+            entity['token'] = self._generate_redaction_token(entity['type'], token_counter)
+
         return filtered_entities
     
     def redact_text(self, text: str) -> Tuple[str, List[Dict[str, Any]]]:
         """
         Redact PII from text and return redacted text with token mappings
-        
+
         Args:
             text: Original text to redact
-            
+
         Returns:
             Tuple of (redacted_text, token_mappings)
         """
-        # Detect PII entities
-        entities = self.detect_pii(text)
+        # Create a fresh, request-scoped token counter
+        token_counter: Dict[str, int] = {}
+
+        # Detect PII entities with request-scoped counter
+        entities = self.detect_pii(text, token_counter)
         
         # If no entities found, return original text
         if not entities:
@@ -454,20 +454,20 @@ class EnhancedPIIRedactor(PIIRedactor):
             )
         }
     
-    def detect_pii(self, text: str) -> List[Dict[str, Any]]:
+    def detect_pii(self, text: str, token_counter: Dict[str, int]) -> List[Dict[str, Any]]:
         """
         Enhanced PII detection with pattern matching for court documents
         """
-        # Get entities from model
-        entities = super().detect_pii(text)
-        
+        # Get entities from model (already generates tokens later using token_counter in super)
+        entities = super().detect_pii(text, token_counter)
+
         # Add pattern-based detection
         for pattern_type, pattern in self.patterns.items():
             matches = pattern.finditer(text)
             for match in matches:
                 start, end = match.span()
                 match_text = match.group()
-                
+
                 # Skip common non-PII phrases
                 if pattern_type == 'PERSON':
                     # Skip if it's a common title without a following name
@@ -480,7 +480,7 @@ class EnhancedPIIRedactor(PIIRedactor):
                     if match_text in ['Letter Ref', 'National Insurance', 'Westminster Magistrates',
                                       'Dart & Knight', 'Knight LLP', 'NHS Letter']:
                         continue
-                
+
                 # Check if this region is already covered by a model-detected entity
                 covered = False
                 for e in entities:
@@ -495,9 +495,9 @@ class EnhancedPIIRedactor(PIIRedactor):
                         else:
                             covered = True
                             break
-                
+
                 if not covered:
-                    redaction_token = self._generate_redaction_token(pattern_type)
+                    redaction_token = self._generate_redaction_token(pattern_type, token_counter)
                     entities.append({
                         'token': redaction_token,
                         'value': match_text,
@@ -506,11 +506,11 @@ class EnhancedPIIRedactor(PIIRedactor):
                         'end': end,
                         'score': 1.0  # Pattern matches have high confidence
                     })
-        
+
         # Remove duplicates and merge overlapping entities
         filtered_entities = []
         entities.sort(key=lambda x: (x['start'], -x['end']))  # Sort by start, then by end (descending)
-        
+
         for entity in entities:
             # Check if this entity overlaps with any already added entity
             should_add = True
@@ -520,18 +520,18 @@ class EnhancedPIIRedactor(PIIRedactor):
                     # Overlapping entities - keep the one with higher score or larger coverage
                     entity_coverage = entity['end'] - entity['start']
                     existing_coverage = existing['end'] - existing['start']
-                    
+
                     if (entity['score'] > existing['score'] or
                         (entity['score'] == existing['score'] and entity_coverage > existing_coverage)):
                         # Replace existing with new entity
                         filtered_entities[i] = entity
                     should_add = False
                     break
-            
+
             if should_add:
                 filtered_entities.append(entity)
-        
+
         # Re-sort by position
         filtered_entities.sort(key=lambda x: x['start'])
-        
+
         return filtered_entities
