@@ -129,7 +129,19 @@ class PIIRedactor:
             'DRIVER_LICENSE': 'DRIVER_LICENSE',
             'BADGE_NUMBER': 'BADGE_NUMBER',
             'NATIONAL_INSURANCE': 'NATIONAL_INSURANCE',
-            'UK_POSTCODE': 'POSTCODE'
+            'UK_POSTCODE': 'POSTCODE',
+            # Added new types for enhanced patterns
+            'VEHICLE_REGISTRATION': 'VEHICLE_REGISTRATION',
+            'BANK_SORT_CODE': 'BANK_SORT_CODE',
+            'ACCOUNT_NUMBER': 'ACCOUNT_NUMBER',
+            'PARTIAL_CARD_NUMBER': 'PARTIAL_CARD_NUMBER',
+            'FINANCIAL_AMOUNT': 'FINANCIAL_AMOUNT',
+            'MEDICAL_ID': 'MEDICAL_ID',
+            'LEGAL_ID': 'LEGAL_ID',
+            'POLICE_ID': 'POLICE_ID',
+            'ALPHANUMERIC_CODE': 'ALPHANUMERIC_CODE',
+            'GENERIC_ID': 'GENERIC_ID',
+            'FILENAME': 'FILENAME'
         }
 
         descriptive_type = type_mapping.get(clean_type, clean_type)
@@ -395,61 +407,65 @@ class EnhancedPIIRedactor(PIIRedactor):
         
         # Additional regex patterns for court-specific PII
         self.patterns = {
-            'PERSON': re.compile(
-                # Match full names with optional middle initials/names
-                r'\b(?:'
-                # Title + Name patterns (require at least first and last name)
-                r'(?:Mr\.?|Mrs\.?|Ms\.?|Dr\.?|Prof\.?|Judge|Officer|PC|Detective|Sergeant|Captain|Lieutenant)\s+'
-                r'[A-Z][a-z]+(?:\s+[A-Z]\.?)?\s+[A-Z][a-z]+|'
-                # First Middle Last patterns
-                r'[A-Z][a-z]+\s+[A-Z]\.\s+[A-Z][a-z]+|'
-                # First Last patterns (but exclude common non-name patterns)
-                r'(?!Letter\s+Ref|National\s+Insurance|Westminster\s+Magistrates|NHS\s+Letter|Dart\s+&)'
-                r'[A-Z][a-z]+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?'
-                r')\b'
-            ),
+            # --- IDENTIFIERS ---
             'CASE_NUMBER': re.compile(
-                r'\b(?:Case|Docket|File)\s*(?:No\.?|Number|#|ID)?\s*:?\s*'
-                r'[A-Z0-9]{2,}(?:[-/][A-Z0-9]+)*\b',
+                r'\b(?:Case|Docket|File|Claim|Ref|Reference)\s*(?:No\.?|Number|#|ID)?\s*:?\s*'
+                r'[A-Z0-9]{2,}[-/][A-Z0-9-]{2,}\b',
                 re.IGNORECASE
             ),
-            'COURT_ID': re.compile(
-                r'\b(?:Court\s*ID|Judge\s*ID|Bar\s*(?:No|Number)|Attorney\s*(?:No|Number))'
-                r'\s*:?\s*[A-Z0-9]{5,}\b',
+            'POLICE_ID': re.compile(
+                r'\b(?:Badge\s*(?:No\.?|Number)?|PC|Officer|Incident\s*Log)\s*:?\s*[A-Z0-9-]{4,}\b',
                 re.IGNORECASE
             ),
-            'SSN': re.compile(
-                r'\b(?:(?:SSN|Social\s*Security)\s*(?:No\.?|Number|#)?\s*:?\s*)?'
-                r'(?!000|666|9\d{2})\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b',
+            'MEDICAL_ID': re.compile(
+                r'\b(?:GMC\s*(?:reg(?:istration)?)?|HCPC\s*(?:reg(?:istration)?)?|Patient\s*ID)\s*:?\s*[A-Z0-9-]{5,}\b',
+                re.IGNORECASE
+            ),
+            'LEGAL_ID': re.compile(
+                r'\b(?:SRA\s*ID|LAA|Legal\s*Aid\s*Account)\s*:?\s*[A-Z0-9-]{5,}\b',
                 re.IGNORECASE
             ),
             'DRIVER_LICENSE': re.compile(
                 r'\b(?:DL|Driver\'s?\s*License)\s*(?:No\.?|Number|#)?\s*:?\s*'
-                r'[A-Z0-9]{6,}\b',
-                re.IGNORECASE
-            ),
-            'BADGE_NUMBER': re.compile(
-                r'\b(?:Badge|Officer)\s+(?:No\.?|Number)\s*:?\s*'
-                r'[A-Z0-9]{4,}\b',
+                r'[A-Z]{5}[0-9]{6}[A-Z0-9]{2}[A-Z]{2}\b',
                 re.IGNORECASE
             ),
             'NATIONAL_INSURANCE': re.compile(
-                r'\b[A-Z]{2}\s*\d{2}\s*\d{2}\s*\d{2}\s*[A-Z]\b',
+                r'\b[A-CEGHJ-PR-TW-Z]{2}\s?\d{2}\s?\d{2}\s?\d{2}\s?[A-D]\b',
                 re.IGNORECASE
             ),
+            'VEHICLE_REGISTRATION': re.compile(
+                r'\b[A-Z]{2}\d{2}\s?[A-Z]{3}\b',
+                re.IGNORECASE
+            ),
+             'ALPHANUMERIC_CODE': re.compile(
+                r'\b(?:INV|Employee\s*(?:ID|number)|Ref)\s*[:-]?\s*[A-Z0-9-]{4,}\b',
+                 re.IGNORECASE
+            ),
+            'GENERIC_ID': re.compile(r'\b(?:policy|reference|member)\s*(?:No\.?|number|#|ID)\s*:?\s*[A-Z0-9-]{5,}\b', re.IGNORECASE),
+            'FILENAME': re.compile(r'\b[A-Z0-9_]+\.(?:MP4|PDF|DOCX|JPG|PNG)\b', re.IGNORECASE),
+
+            # --- FINANCIAL ---
+            'BANK_SORT_CODE': re.compile(r'\b\d{2}-\d{2}-\d{2}\b'),
+            'ACCOUNT_NUMBER': re.compile(r'\b(?:account|acct)\s*(?:No\.?|number)?\s*:?\s*\d{8,}\b', re.IGNORECASE),
+            'PARTIAL_CARD_NUMBER': re.compile(r'\b(?:ending\s*in|ending\s*with)\s*\d{4}\b', re.IGNORECASE),
+            'FINANCIAL_AMOUNT': re.compile(r'£\d{1,3}(?:,\d{3})*(?:\.\d{2})?'),
+            
+            # --- CONTACT & LOCATION ---
             'UK_POSTCODE': re.compile(
-                r'\b[A-Z]{1,2}\d{1,2}[A-Z]?\s*\d[A-Z]{2}\b',
+                r'\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b',
                 re.IGNORECASE
             ),
             'PHONE': re.compile(
-                r'\b(?:\+44\s*|0)(?:\d{4}\s*\d{6}|\d{3}\s*\d{3}\s*\d{4}|\d{5}\s*\d{6})\b'
+                r'\b(?:(?:\+44\s?|0)7\d{3}\s?\d{6}|(?:0\d{4}\s?\d{6}))\b'
             ),
             'EMAIL': re.compile(
                 r'\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b'
             ),
-            'ADDRESS': re.compile(
-                r'\b(?:Flat|Apartment|Suite|Unit)\s*\d+[A-Z]?\s*,?\s*\d+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+'
-                r'(?:Street|St|Road|Rd|Avenue|Ave|Lane|Ln|Drive|Dr|Court|Ct|Place|Pl|Boulevard|Blvd)\b',
+            
+            # --- DATES ---
+            'DATE': re.compile(
+                r'\b(?:\d{1,2}(?:st|nd|rd|th)?\s+of\s+)?(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?(?:,)?\s+\d{4}\b',
                 re.IGNORECASE
             )
         }
@@ -458,80 +474,43 @@ class EnhancedPIIRedactor(PIIRedactor):
         """
         Enhanced PII detection with pattern matching for court documents
         """
-        # Get entities from model (already generates tokens later using token_counter in super)
-        entities = super().detect_pii(text, token_counter)
+        # Get entities from model first
+        model_entities = super().detect_pii(text, {}) # Use a temporary counter for the model pass
 
-        # Add pattern-based detection
+        # --- Run pattern-based detection ---
+        pattern_entities = []
         for pattern_type, pattern in self.patterns.items():
-            matches = pattern.finditer(text)
-            for match in matches:
+            for match in pattern.finditer(text):
                 start, end = match.span()
-                match_text = match.group()
+                pattern_entities.append({
+                    'value': match.group(0),
+                    'type': pattern_type,
+                    'start': start,
+                    'end': end,
+                    'score': 1.0  # Pattern matches have high confidence
+                })
 
-                # Skip common non-PII phrases
-                if pattern_type == 'PERSON':
-                    # Skip if it's a common title without a following name
-                    if match_text.lower() in ['mr', 'mrs', 'ms', 'dr', 'prof']:
-                        continue
-                    # Skip single words that might be common nouns
-                    if ' ' not in match_text and match_text.lower() in ['case', 'court', 'letter', 'ref']:
-                        continue
-                    # Skip known false positives
-                    if match_text in ['Letter Ref', 'National Insurance', 'Westminster Magistrates',
-                                      'Dart & Knight', 'Knight LLP', 'NHS Letter']:
-                        continue
+        # --- Merge model and pattern results ---
+        # Combine lists and sort by start position, then by end position descending (longest match first)
+        combined_entities = sorted(model_entities + pattern_entities, key=lambda x: (x['start'], -x['end']))
+        
+        merged_entities = []
+        last_end_pos = -1
 
-                # Check if this region is already covered by a model-detected entity
-                covered = False
-                for e in entities:
-                    # Check for overlap
-                    if (e['start'] <= start < e['end'] or
-                        e['start'] < end <= e['end'] or
-                        start <= e['start'] < end or
-                        start < e['end'] <= end):
-                        # If pattern match is larger, replace the model entity
-                        if end - start > e['end'] - e['start']:
-                            entities.remove(e)
-                        else:
-                            covered = True
-                            break
+        for entity in combined_entities:
+            # If the current entity starts after or at the same position the last one ended, it's a clean addition.
+            if entity['start'] >= last_end_pos:
+                merged_entities.append(entity)
+                last_end_pos = entity['end']
+            # This logic implicitly handles overlaps by prioritizing the longest match that appears first in the sorted list.
+            # Any smaller or overlapping entities that start at the same position or later but before the last_end_pos are ignored.
+        
+        # Final pass to generate unique tokens for the final, merged list
+        final_entities = []
+        for entity in merged_entities:
+             # Ensure we have valid values - skip entities with empty values
+            if entity['value'].strip():
+                entity['token'] = self._generate_redaction_token(entity['type'], token_counter)
+                final_entities.append(entity)
 
-                if not covered:
-                    redaction_token = self._generate_redaction_token(pattern_type, token_counter)
-                    entities.append({
-                        'token': redaction_token,
-                        'value': match_text,
-                        'type': pattern_type,
-                        'start': start,
-                        'end': end,
-                        'score': 1.0  # Pattern matches have high confidence
-                    })
-
-        # Remove duplicates and merge overlapping entities
-        filtered_entities = []
-        entities.sort(key=lambda x: (x['start'], -x['end']))  # Sort by start, then by end (descending)
-
-        for entity in entities:
-            # Check if this entity overlaps with any already added entity
-            should_add = True
-            for i, existing in enumerate(filtered_entities):
-                # Check for overlap
-                if (entity['start'] < existing['end'] and entity['end'] > existing['start']):
-                    # Overlapping entities - keep the one with higher score or larger coverage
-                    entity_coverage = entity['end'] - entity['start']
-                    existing_coverage = existing['end'] - existing['start']
-
-                    if (entity['score'] > existing['score'] or
-                        (entity['score'] == existing['score'] and entity_coverage > existing_coverage)):
-                        # Replace existing with new entity
-                        filtered_entities[i] = entity
-                    should_add = False
-                    break
-
-            if should_add:
-                filtered_entities.append(entity)
-
-        # Re-sort by position
-        filtered_entities.sort(key=lambda x: x['start'])
-
-        return filtered_entities
+        return final_entities

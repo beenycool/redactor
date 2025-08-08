@@ -12,17 +12,6 @@ const DEFAULT_CONFIDENCE = 0.5;
 // Maximum history size to prevent memory issues
 const MAX_HISTORY_SIZE = 100;
 
-const SAMPLE_TEXTS = [
-  {
-    name: "Court Report",
-    text: "John Doe appeared before Judge Smith on Case No. 2024-CR-1234..."
-  },
-  {
-    name: "Medical Record",
-    text: "Patient Jane Smith, SSN 123-45-6789, visited on 01/15/2024..."
-  }
-  // Add more if desired
-];
 
 export default function Home() {
   const [originalText, setOriginalText] = useState('');
@@ -407,33 +396,12 @@ export default function Home() {
           <div className="mb-4 p-4 bg-red-100 border border-red-400 text-red-700 rounded">
             {redactionError || restorationError}
           </div>
-        )}
+        )}r
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Top Left - Original Text Input */}
           <div className="h-[400px]">
             {/* Sample Text Dropdown */}
-            <div className="mb-2 flex items-center gap-2">
-              <label htmlFor="sample-text-select" className="text-sm font-medium text-gray-700">
-                Load Sample Text:
-              </label>
-              <select
-                id="sample-text-select"
-                className="px-2 py-1 border rounded text-sm"
-                defaultValue=""
-                onChange={e => {
-                  const idx = e.target.value;
-                  if (idx !== "") {
-                    setOriginalText(SAMPLE_TEXTS[Number(idx)].text);
-                  }
-                }}
-              >
-                <option value="">Select a sample...</option>
-                {SAMPLE_TEXTS.map((sample, i) => (
-                  <option key={sample.name} value={i}>{sample.name}</option>
-                ))}
-              </select>
-            </div>
             <TextBox
               title="Original Text"
               content={originalText}
@@ -457,14 +425,7 @@ export default function Home() {
               highlightRedactions={true}
               loading={isRedacting}
             />
-            {redactedText && (
-              <button
-                onClick={handleCopyToLlm}
-                className="mt-2 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors text-sm"
-              >
-                Copy to LLM Output →
-              </button>
-            )}
+            {/* Removed Copy to LLM Output button as requested */}
             {/* Redaction Summary Panel */}
             {currentTokensRef.current.length > 0 && (
               <div className="mt-4 p-3 bg-gray-50 rounded">
@@ -485,28 +446,15 @@ export default function Home() {
 
           {/* Bottom Left - Tokens JSON Output */}
           <div className="h-[400px]">
-            <TextBox
-              title="Redaction Tokens (JSON)"
-              content={tokensJson}
-              readOnly={true}
-              highlightRedactions={true}
-            />
-            <div className="mt-4 flex gap-4">
-              <button
-                onClick={handleDownloadTokens}
-                disabled={!tokensJson}
-                className={`px-4 py-2 rounded bg-blue-500 text-white font-semibold hover:bg-blue-600 transition-colors text-sm ${!tokensJson ? 'opacity-50 cursor-not-allowed' : ''}`}
-              >
-                Export Tokens
-              </button>
-              <button
-                onClick={handleOpenFileDialog}
-                className="px-4 py-2 rounded bg-green-500 text-white font-semibold hover:bg-green-600 transition-colors text-sm"
-              >
-                Import Tokens
-              </button>
-            </div>
-          </div>
+                      {/* Redaction Tokens (JSON) display removed as requested */}
+                      {/* <TextBox
+                        title="Redaction Tokens (JSON)"
+                        content={tokensJson}
+                        readOnly={true}
+                        highlightRedactions={true}
+                      /> */}
+                      {/* Export/Import Tokens buttons removed */}
+                    </div>
 
           {/* Bottom Right - LLM Output / Restored Text */}
           <div className="h-[400px]">
@@ -517,12 +465,7 @@ export default function Home() {
               placeholder="Paste the redacted text from LLM here to restore original values..."
               loading={isRestoring}
             />
-            {restoredText && (
-              <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded">
-                <h4 className="font-semibold text-green-800 mb-1">Restored Text:</h4>
-                <p className="text-green-700 whitespace-pre-wrap">{restoredText}</p>
-              </div>
-            )}
+            {/* Restored Text box removed as requested */}
           </div>
         </div>
 
@@ -551,16 +494,6 @@ export default function Home() {
         </div>
 
         {/* Instructions */}
-        <div className="mt-8 p-4 bg-blue-50 border border-blue-200 rounded">
-          <h3 className="font-semibold text-blue-800 mb-2">How to use:</h3>
-          <ol className="list-decimal list-inside text-blue-700 space-y-1">
-            <li>Paste your text in the "Original Text" box</li>
-            <li>The redacted version will automatically appear in the "Redacted Text" box</li>
-            <li>Token mappings will be shown in JSON format for debugging</li>
-            <li>Copy the redacted text to an LLM for processing</li>
-            <li>Paste the LLM's output in the "LLM Output" box to restore original values</li>
-          </ol>
-        </div>
         {/* Hidden file input for importing tokens */}
         <input
           type="file"

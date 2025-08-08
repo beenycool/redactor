@@ -86,29 +86,7 @@ export default function TestTokens() {
             </div>
           </div>
 
-          <div style={{ marginBottom: '20px' }}>
-            <h3>Raw Tokens (from API):</h3>
-            <pre style={{
-              padding: '10px',
-              backgroundColor: '#f5f5f5',
-              borderRadius: '4px',
-              overflow: 'auto'
-            }}>
-              {JSON.stringify(result.tokens, null, 2)}
-            </pre>
-          </div>
-
-          <div>
-            <h3>Formatted JSON Output:</h3>
-            <pre style={{
-              padding: '10px',
-              backgroundColor: '#f5f5f5',
-              borderRadius: '4px',
-              overflow: 'auto'
-            }}>
-              {result.jsonOutput}
-            </pre>
-          </div>
+          {/* Raw Tokens (from API) and Formatted JSON Output blocks removed as requested */}
         </div>
       )}
     </div>
