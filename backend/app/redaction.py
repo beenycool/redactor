@@ -56,31 +56,41 @@ class PIIRedactor:
         Returns:
             List of (chunk_text, start_offset) tuples
         """
-        # Simple character-based chunking with overlap
-        chunk_size = 2000  # Approximate characters per chunk
-        overlap = 200      # Character overlap between chunks
-        
+        # Token-based chunking to fit within model's token limit
+        # Uses tokenizer to map tokens to character offsets
+
+        # Tokenize the entire text with offset mapping
+        encoding = self.tokenizer(
+            text,
+            return_offsets_mapping=True,
+            add_special_tokens=False
+        )
+        input_ids = encoding["input_ids"]
+        offsets = encoding["offset_mapping"]
+
         chunks = []
-        start = 0
-        
-        while start < len(text):
-            end = min(start + chunk_size, len(text))
-            
-            # Try to find a sentence boundary
-            if end < len(text):
-                # Look for sentence end
-                for sep in ['. ', '.\n', '! ', '? ', '\n\n']:
-                    last_sep = text.rfind(sep, start, end)
-                    if last_sep > start + chunk_size // 2:
-                        end = last_sep + len(sep)
-                        break
-            
-            chunk = text[start:end]
-            chunks.append((chunk, start))
-            
-            # Move start position with overlap
-            start = end - overlap if end < len(text) else end
-        
+        chunk_size = self.max_length  # 512 tokens
+        overlap = 32  # Overlap tokens between chunks for context
+
+        i = 0
+        while i < len(input_ids):
+            # Determine chunk token indices
+            chunk_start = i
+            chunk_end = min(i + chunk_size, len(input_ids))
+
+            # Get character start/end for chunk
+            char_start = offsets[chunk_start][0]
+            char_end = offsets[chunk_end - 1][1]
+
+            chunk_text = text[char_start:char_end]
+            chunks.append((chunk_text, char_start))
+
+            # Move to next chunk with overlap
+            if chunk_end < len(input_ids):
+                i = chunk_end - overlap
+            else:
+                i = chunk_end
+
         return chunks
     
     def _generate_redaction_token(self, entity_type: str, token_counter: Dict[str, int]) -> str:
@@ -398,119 +408,185 @@ class PIIRedactor:
 
 
 class EnhancedPIIRedactor(PIIRedactor):
-    """
-    Enhanced PII Redactor with additional pattern matching for court-specific data
-    """
-    
     def __init__(self, model_name: str = "iiiorg/piiranha-v1-detect-personal-information"):
         super().__init__(model_name)
+        self.name_consistency_map = {}
+        self.batch_size = 4  # Process multiple chunks in parallel
         
-        # Additional regex patterns for court-specific PII
-        self.patterns = {
-            # --- IDENTIFIERS ---
-            'CASE_NUMBER': re.compile(
-                r'\b(?:Case|Docket|File|Claim|Ref|Reference)\s*(?:No\.?|Number|#|ID)?\s*:?\s*'
-                r'[A-Z0-9]{2,}[-/][A-Z0-9-]{2,}\b',
-                re.IGNORECASE
-            ),
-            'POLICE_ID': re.compile(
-                r'\b(?:Badge\s*(?:No\.?|Number)?|PC|Officer|Incident\s*Log)\s*:?\s*[A-Z0-9-]{4,}\b',
-                re.IGNORECASE
-            ),
-            'MEDICAL_ID': re.compile(
-                r'\b(?:GMC\s*(?:reg(?:istration)?)?|HCPC\s*(?:reg(?:istration)?)?|Patient\s*ID)\s*:?\s*[A-Z0-9-]{5,}\b',
-                re.IGNORECASE
-            ),
-            'LEGAL_ID': re.compile(
-                r'\b(?:SRA\s*ID|LAA|Legal\s*Aid\s*Account)\s*:?\s*[A-Z0-9-]{5,}\b',
-                re.IGNORECASE
-            ),
-            'DRIVER_LICENSE': re.compile(
-                r'\b(?:DL|Driver\'s?\s*License)\s*(?:No\.?|Number|#)?\s*:?\s*'
-                r'[A-Z]{5}[0-9]{6}[A-Z0-9]{2}[A-Z]{2}\b',
-                re.IGNORECASE
-            ),
-            'NATIONAL_INSURANCE': re.compile(
-                r'\b[A-CEGHJ-PR-TW-Z]{2}\s?\d{2}\s?\d{2}\s?\d{2}\s?[A-D]\b',
-                re.IGNORECASE
-            ),
-            'VEHICLE_REGISTRATION': re.compile(
-                r'\b[A-Z]{2}\d{2}\s?[A-Z]{3}\b',
-                re.IGNORECASE
-            ),
-             'ALPHANUMERIC_CODE': re.compile(
-                r'\b(?:INV|Employee\s*(?:ID|number)|Ref)\s*[:-]?\s*[A-Z0-9-]{4,}\b',
-                 re.IGNORECASE
-            ),
-            'GENERIC_ID': re.compile(r'\b(?:policy|reference|member)\s*(?:No\.?|number|#|ID)\s*:?\s*[A-Z0-9-]{5,}\b', re.IGNORECASE),
-            'FILENAME': re.compile(r'\b[A-Z0-9_]+\.(?:MP4|PDF|DOCX|JPG|PNG)\b', re.IGNORECASE),
-
-            # --- FINANCIAL ---
-            'BANK_SORT_CODE': re.compile(r'\b\d{2}-\d{2}-\d{2}\b'),
-            'ACCOUNT_NUMBER': re.compile(r'\b(?:account|acct)\s*(?:No\.?|number)?\s*:?\s*\d{8,}\b', re.IGNORECASE),
-            'PARTIAL_CARD_NUMBER': re.compile(r'\b(?:ending\s*in|ending\s*with)\s*\d{4}\b', re.IGNORECASE),
-            'FINANCIAL_AMOUNT': re.compile(r'£\d{1,3}(?:,\d{3})*(?:\.\d{2})?'),
+    def _detect_pii_batch(self, chunks: List[Tuple[str, int]]) -> List[Dict[str, Any]]:
+        """
+        Process multiple chunks in a batch for efficiency
+        """
+        import concurrent.futures
+        
+        all_entities = []
+        
+        # Process chunks in parallel using ThreadPoolExecutor
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.batch_size) as executor:
+            futures = []
+            for chunk_text, chunk_offset in chunks:
+                future = executor.submit(self._detect_pii_in_chunk, chunk_text, chunk_offset)
+                futures.append(future)
             
-            # --- CONTACT & LOCATION ---
-            'UK_POSTCODE': re.compile(
-                r'\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b',
-                re.IGNORECASE
-            ),
-            'PHONE': re.compile(
-                r'\b(?:(?:\+44\s?|0)7\d{3}\s?\d{6}|(?:0\d{4}\s?\d{6}))\b'
-            ),
-            'EMAIL': re.compile(
-                r'\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b'
-            ),
+            # Collect results
+            for future in concurrent.futures.as_completed(futures):
+                entities = future.result()
+                all_entities.extend(entities)
+        
+        return all_entities
+    
+    def detect_pii_with_consistency(self, text: str, token_counter: Dict[str, int]) -> List[Dict[str, Any]]:
+        """
+        Enhanced PII detection with name consistency
+        """
+        # Split into chunks
+        chunks = self._split_text_into_chunks(text)
+        
+        # Batch process chunks
+        batch_entities = []
+        for i in range(0, len(chunks), self.batch_size):
+            batch = chunks[i:i + self.batch_size]
+            entities = self._detect_pii_batch(batch)
+            batch_entities.extend(entities)
+        
+        # Build name consistency map
+        self._build_name_consistency_map(batch_entities, text)
+        
+        # Apply consistency rules
+        consistent_entities = self._apply_name_consistency(batch_entities, text, token_counter)
+        
+        # Merge with pattern-based detection
+        pattern_entities = self._detect_patterns(text)
+        
+        # Combine and deduplicate
+        all_entities = self._merge_entities(consistent_entities + pattern_entities)
+        
+        # Generate tokens
+        for entity in all_entities:
+            entity['token'] = self._generate_redaction_token(entity['type'], token_counter)
+        
+        return all_entities
+    
+    def _build_name_consistency_map(self, entities: List[Dict], text: str):
+        """
+        Build a map of name components for consistency
+        """
+        self.name_consistency_map = {}
+        
+        for entity in entities:
+            if entity['type'] in ['PERSON', 'GIVENNAME', 'SURNAME']:
+                # Split name into components
+                name_parts = entity['value'].split()
+                for part in name_parts:
+                    normalized = part.lower()
+                    if normalized not in self.name_consistency_map:
+                        self.name_consistency_map[normalized] = {
+                            'original_entity': entity,
+                            'occurrences': []
+                        }
+                    
+                    # Find all occurrences of this name part in text
+                    import re
+                    pattern = re.compile(rf'\b{re.escape(part)}\b', re.IGNORECASE)
+                    for match in pattern.finditer(text):
+                        self.name_consistency_map[normalized]['occurrences'].append({
+                            'start': match.start(),
+                            'end': match.end(),
+                            'value': match.group()
+                        })
+    
+    def _apply_name_consistency(self, entities: List[Dict], text: str, token_counter: Dict[str, int]) -> List[Dict]:
+        """
+        Apply consistency rules to ensure all instances of names are redacted
+        """
+        enhanced_entities = entities.copy()
+        
+        # Add missing name instances
+        for name_key, info in self.name_consistency_map.items():
+            original_entity = info['original_entity']
             
-            # --- DATES ---
-            'DATE': re.compile(
-                r'\b(?:\d{1,2}(?:st|nd|rd|th)?\s+of\s+)?(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?(?:,)?\s+\d{4}\b',
+            for occurrence in info['occurrences']:
+                # Check if this occurrence is already covered
+                already_covered = any(
+                    e['start'] <= occurrence['start'] < e['end'] or
+                    e['start'] < occurrence['end'] <= e['end']
+                    for e in enhanced_entities
+                )
+                
+                if not already_covered:
+                    # Add new entity for this occurrence
+                    enhanced_entities.append({
+                        'value': occurrence['value'],
+                        'type': f"{original_entity['type']}_CONSISTENT",
+                        'start': occurrence['start'],
+                        'end': occurrence['end'],
+                        'score': 0.9  # High confidence for consistency matches
+                    })
+        
+        return enhanced_entities
+    
+    def _detect_patterns(self, text: str) -> List[Dict[str, Any]]:
+        """
+        Enhanced pattern detection with improved regex
+        """
+        pattern_entities = []
+        
+        # Enhanced patterns for better coverage
+        enhanced_patterns = {
+            **self.patterns,
+            'PERSON_NAME': re.compile(
+                r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3}\b'
+            ),
+            'INITIALS': re.compile(
+                r'\b[A-Z]\.?\s*[A-Z]\.?\s*[A-Z]?\.?\b'
+            ),
+            'TITLE_NAME': re.compile(
+                r'\b(?:Mr|Mrs|Ms|Dr|Prof|Rev|Judge|Officer)\.?\s+[A-Z][a-z]+\b',
                 re.IGNORECASE
             )
         }
-    
-    def detect_pii(self, text: str, token_counter: Dict[str, int]) -> List[Dict[str, Any]]:
-        """
-        Enhanced PII detection with pattern matching for court documents
-        """
-        # Get entities from model first
-        model_entities = super().detect_pii(text, {}) # Use a temporary counter for the model pass
-
-        # --- Run pattern-based detection ---
-        pattern_entities = []
-        for pattern_type, pattern in self.patterns.items():
+        
+        for pattern_type, pattern in enhanced_patterns.items():
             for match in pattern.finditer(text):
-                start, end = match.span()
                 pattern_entities.append({
                     'value': match.group(0),
                     'type': pattern_type,
-                    'start': start,
-                    'end': end,
-                    'score': 1.0  # Pattern matches have high confidence
+                    'start': match.start(),
+                    'end': match.end(),
+                    'score': 0.95
                 })
-
-        # --- Merge model and pattern results ---
-        # Combine lists and sort by start position, then by end position descending (longest match first)
-        combined_entities = sorted(model_entities + pattern_entities, key=lambda x: (x['start'], -x['end']))
         
-        merged_entities = []
-        last_end_pos = -1
-
-        for entity in combined_entities:
-            # If the current entity starts after or at the same position the last one ended, it's a clean addition.
-            if entity['start'] >= last_end_pos:
-                merged_entities.append(entity)
-                last_end_pos = entity['end']
-            # This logic implicitly handles overlaps by prioritizing the longest match that appears first in the sorted list.
-            # Any smaller or overlapping entities that start at the same position or later but before the last_end_pos are ignored.
+        return pattern_entities
+    
+    def _merge_entities(self, entities: List[Dict]) -> List[Dict]:
+        """
+        Intelligent merging of overlapping entities
+        """
+        if not entities:
+            return []
         
-        # Final pass to generate unique tokens for the final, merged list
-        final_entities = []
-        for entity in merged_entities:
-             # Ensure we have valid values - skip entities with empty values
-            if entity['value'].strip():
-                entity['token'] = self._generate_redaction_token(entity['type'], token_counter)
-                final_entities.append(entity)
-
-        return final_entities
+        # Sort by start position, then by score (higher first)
+        sorted_entities = sorted(entities, key=lambda x: (x['start'], -x.get('score', 0)))
+        
+        merged = []
+        for entity in sorted_entities:
+            # Check for overlap with existing entities
+            overlap = False
+            for i, existing in enumerate(merged):
+                if (entity['start'] < existing['end'] and
+                    entity['end'] > existing['start']):
+                    # Overlapping - keep the one with higher score or merge
+                    if entity.get('score', 0) > existing.get('score', 0):
+                        merged[i] = entity
+                    elif entity['type'] == existing['type']:
+                        # Same type - extend the range
+                        merged[i]['start'] = min(entity['start'], existing['start'])
+                        merged[i]['end'] = max(entity['end'], existing['end'])
+                        merged[i]['value'] = text[merged[i]['start']:merged[i]['end']]
+                    overlap = True
+                    break
+            
+            if not overlap:
+                merged.append(entity)
+        
+        return merged

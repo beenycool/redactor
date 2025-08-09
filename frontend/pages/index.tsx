@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import TextBox from '../components/TextBox';
-import { redactionService, RedactionToken } from '../services/redactionService';
+import { redactionService, RedactionToken, enhancedRedactionService } from '../services/redactionService';
 import { tokensToJson, parseTokensFromJson, tokensByTypeCount } from '../utils/tokenUtils';
 import { getPIITypeClass } from '../components/PIIBadge';
 
@@ -22,6 +22,12 @@ export default function Home() {
   // Confidence threshold state
   const [confidenceThreshold, setConfidenceThreshold] = useState(DEFAULT_CONFIDENCE);
 
+  // Qwen integration state
+  const [qwenUrl, setQwenUrl] = useState('');
+  const [useQwen, setUseQwen] = useState(false);
+  const [useConsistency, setUseConsistency] = useState(true);
+  const [isConnectingQwen, setIsConnectingQwen] = useState(false);
+
   // Undo/Redo state history
   type HistoryState = {
     originalText: string;
@@ -39,42 +45,48 @@ export default function Home() {
       const truncated = historyIndex >= 0 ? prev.slice(0, historyIndex + 1) : prev;
       const updated = [...truncated, newState];
       // Enforce maximum history size
+      let finalHistory = updated;
       if (updated.length > MAX_HISTORY_SIZE) {
         // Remove oldest entries
-        return updated.slice(updated.length - MAX_HISTORY_SIZE);
+        finalHistory = updated.slice(updated.length - MAX_HISTORY_SIZE);
       }
-      return updated;
-    });
-    setHistoryIndex(idx => {
-      // If history was truncated, keep index at the end
-      const newLength = historyIndex >= 0 ? Math.min(historyIndex + 1, MAX_HISTORY_SIZE - 1) : 0;
-      return newLength;
+      
+      // Update historyIndex synchronously based on the actual new history length
+      setHistoryIndex(Math.max(0, finalHistory.length - 1));
+      
+      return finalHistory;
     });
   }, [historyIndex]);
 
   // Undo handler
   const handleUndo = useCallback(() => {
-    if (historyIndex > 0) {
-      const prevState = history[historyIndex - 1];
-      setOriginalText(prevState.originalText);
-      setRedactedText(prevState.redactedText);
-      setTokensJson(prevState.tokensJson);
-      currentTokensRef.current = prevState.tokens;
-      setHistoryIndex(historyIndex - 1);
-    }
-  }, [history, historyIndex]);
+    setHistoryIndex(currentIndex => {
+      if (currentIndex > 0) {
+        const prevState = history[currentIndex - 1];
+        setOriginalText(prevState.originalText);
+        setRedactedText(prevState.redactedText);
+        setTokensJson(prevState.tokensJson);
+        currentTokensRef.current = prevState.tokens;
+        return currentIndex - 1;
+      }
+      return currentIndex;
+    });
+  }, [history]);
 
   // Redo handler
   const handleRedo = useCallback(() => {
-    if (historyIndex < history.length - 1) {
-      const nextState = history[historyIndex + 1];
-      setOriginalText(nextState.originalText);
-      setRedactedText(nextState.redactedText);
-      setTokensJson(nextState.tokensJson);
-      currentTokensRef.current = nextState.tokens;
-      setHistoryIndex(historyIndex + 1);
-    }
-  }, [history, historyIndex]);
+    setHistoryIndex(currentIndex => {
+      if (currentIndex < history.length - 1) {
+        const nextState = history[currentIndex + 1];
+        setOriginalText(nextState.originalText);
+        setRedactedText(nextState.redactedText);
+        setTokensJson(nextState.tokensJson);
+        currentTokensRef.current = nextState.tokens;
+        return currentIndex + 1;
+      }
+      return currentIndex;
+    });
+  }, [history]);
 
   // Loading states
   const [isRedacting, setIsRedacting] = useState(false);
@@ -198,6 +210,26 @@ export default function Home() {
   const handleCopyToLlm = () => {
     setLlmOutput(redactedText);
     performRestoration(redactedText);
+  };
+
+  // Qwen connection handler
+  const handleConnectQwen = async () => {
+    setIsConnectingQwen(true);
+    try {
+      // Test connection
+      const response = await fetch(`${qwenUrl}/health`);
+      if (response.ok) {
+        enhancedRedactionService.setQwenUrl(qwenUrl);
+        setUseQwen(true);
+        showToast('Connected to Qwen service!');
+      } else {
+        showToast('Failed to connect to Qwen service');
+      }
+    } catch (error) {
+      showToast('Invalid URL or service not running');
+    } finally {
+      setIsConnectingQwen(false);
+    }
   };
 
   // Quick Action Handlers
@@ -358,12 +390,66 @@ export default function Home() {
   
       window.addEventListener('keydown', handleKeyDown);
       return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [originalText, performRedaction, handleCopyRedacted, confidenceThreshold, historyIndex, history, handleUndo, handleRedo, handleClearAll]);
+    }, [originalText, performRedaction, handleCopyRedacted, confidenceThreshold, handleUndo, handleRedo, handleClearAll]);
 
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">
       <main className="flex-1 container mx-auto px-4 py-8">
         <div className="mb-6">
+{/* Qwen Integration and Options */}
+<div className="mt-4 space-y-4">
+  {/* Qwen Integration */}
+  <div className="flex items-center gap-4">
+    <label className="text-sm font-medium text-gray-700">
+      Qwen Double-Check:
+    </label>
+    <input
+      type="text"
+      placeholder="Paste ngrok URL from Colab"
+      value={qwenUrl}
+      onChange={(e) => setQwenUrl(e.target.value)}
+      className="flex-1 px-3 py-1 border rounded"
+    />
+    <button
+      onClick={handleConnectQwen}
+      disabled={!qwenUrl || isConnectingQwen}
+      className="px-4 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
+    >
+      {isConnectingQwen ? 'Connecting...' : 'Connect'}
+    </button>
+    {useQwen && (
+      <span className="text-green-600 text-sm">✓ Connected</span>
+    )}
+  </div>
+  
+  {/* Options */}
+  <div className="flex items-center gap-6">
+    <label className="flex items-center gap-2">
+      <input
+        type="checkbox"
+        checked={useConsistency}
+        onChange={(e) => setUseConsistency(e.target.checked)}
+        className="rounded"
+      />
+      <span className="text-sm text-gray-700">
+        Consistent Name Redaction
+      </span>
+    </label>
+    
+    <label className="flex items-center gap-2">
+      <input
+        type="checkbox"
+        checked={useQwen}
+        onChange={(e) => setUseQwen(e.target.checked)}
+        disabled={!qwenUrl}
+        className="rounded"
+      />
+      <span className="text-sm text-gray-700">
+        Use Qwen Double-Check
+      </span>
+    </label>
+  </div>
+</div>
           <h2 className="text-3xl font-bold text-gray-800 mb-2">
             Text Redaction Tool
           </h2>
