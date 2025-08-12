@@ -509,7 +509,7 @@ async def restore_text(request: RestoreRequest):
         raise HTTPException(
             status_code=400,
             detail=f"Invalid restoration request: {str(e)}"
-        )
+        ) from e
     except Exception as e:
         logger.error(f"Error during restoration: {e}")
         raise HTTPException(
