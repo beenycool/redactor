@@ -469,11 +469,11 @@ class EnhancedPIIRedactor(PIIRedactor):
         pattern_entities = self._detect_patterns(text)
         
         # Combine and deduplicate
-        all_entities = self._merge_entities(consistent_entities + pattern_entities)
+        # Combine and deduplicate
+        all_entities = self._merge_entities(consistent_entities + pattern_entities, text)
         
         # Filter by confidence threshold
         all_entities = [e for e in all_entities if e.get('score', 0) >= confidence_threshold]
-        
         # Generate tokens
         for entity in all_entities:
             entity['token'] = self._generate_redaction_token(entity['type'], token_counter)
