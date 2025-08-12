@@ -146,18 +146,74 @@ except Exception as e:
     logger.error(f"Failed to initialize PII Redactor: {e}")
     redactor = None
 
-# Simple cache for recent redactions using LRU keyed by MD5 of input text
+# Simple cache for recent redactions using LRU keyed by MD5 of input text + confidence threshold
 # We store (redacted_text, token_mappings_as_list_of_dicts)
 @lru_cache(maxsize=100)
-def cached_redact(text_hash: str, original_text: str, confidence_threshold: float = 0.5) -> Tuple[str, List[Dict[str, Any]]]:
+def cached_redact(text_hash: str, confidence_threshold: float = 0.5) -> Tuple[str, List[Dict[str, Any]]]:
     """
     LRU cache for recent redaction results.
-    Keyed by MD5 hash of the input text; original_text and confidence_threshold are provided so the function
-    can compute when there is a miss. The LRU cache will cache by the text_hash only by
-    normalizing 'original_text' and 'confidence_threshold' out via the caller always passing the same hash for the same text.
+    
+    The cache is keyed by (text_hash, confidence_threshold) tuple. The text_hash should be
+    a unique MD5 hash of the input text, ensuring that different texts with the same
+    confidence threshold don't collide, and the same text with different confidence
+    thresholds are cached separately.
+    
+    Args:
+        text_hash: MD5 hash of the input text (used as cache key)
+        confidence_threshold: Confidence threshold for PII detection (used as cache key)
+        
+    Returns:
+        Tuple of (redacted_text, token_mappings)
+        
+    Note:
+        The caller is responsible for ensuring that the text_hash uniquely identifies
+        the text content. If the same text is processed multiple times, the same
+        hash should be used to benefit from caching.
     """
-    # Perform redaction on miss
-    redacted_text, token_mappings = redactor.redact_text(original_text, confidence_threshold)
+    # This function should never be called directly - it's a cache wrapper
+    # The actual text content is not available here, so we can't perform redaction
+    raise RuntimeError("cached_redact should not be called directly. Use the redact_text endpoint instead.")
+
+
+def get_cached_redaction(text: str, confidence_threshold: float = 0.5) -> Tuple[str, List[Dict[str, Any]]]:
+    """
+    Get cached redaction result or compute new one if not cached.
+    
+    This function handles the actual caching logic by computing the hash and
+    either returning cached results or computing new ones.
+    
+    Args:
+        text: Original text to redact
+        confidence_threshold: Confidence threshold for PII detection
+        
+    Returns:
+        Tuple of (redacted_text, token_mappings)
+    """
+    # Compute hash of input text for caching
+    text_hash = hashlib.md5(text.encode()).hexdigest()
+    
+    # Create a unique cache key that includes both hash and threshold
+    cache_key = f"{text_hash}_{confidence_threshold}"
+    
+    # Check if we have a cached result
+    if hasattr(get_cached_redaction, '_cache'):
+        if cache_key in get_cached_redaction._cache:
+            return get_cached_redaction._cache[cache_key]
+    else:
+        get_cached_redaction._cache = {}
+    
+    # Compute new result
+    redacted_text, token_mappings = redactor.redact_text(text, confidence_threshold)
+    
+    # Cache the result
+    get_cached_redaction._cache[cache_key] = (redacted_text, token_mappings)
+    
+    # Limit cache size to prevent memory issues
+    if len(get_cached_redaction._cache) > 100:
+        # Remove oldest entries (simple FIFO)
+        oldest_key = next(iter(get_cached_redaction._cache))
+        del get_cached_redaction._cache[oldest_key]
+    
     return redacted_text, token_mappings
 
 
@@ -384,11 +440,8 @@ async def redact_text(request: RedactRequest):
     try:
         logger.debug(f"Processing redaction request for text of length {len(request.text)}")
 
-        # Compute hash of input text for caching
-        text_hash = hashlib.md5(request.text.encode()).hexdigest()
-
-        # Use LRU cached function; it will compute on miss and cache the result
-        redacted_text, token_mappings = cached_redact(text_hash, request.text, request.confidence_threshold)
+        # Get cached or compute new redaction result
+        redacted_text, token_mappings = get_cached_redaction(request.text, request.confidence_threshold)
 
         logger.info(f"Redaction completed. Found {len(token_mappings)} PII entities")
 
@@ -450,6 +503,13 @@ async def restore_text(request: RestoreRequest):
         
         return RestoreResponse(restored_text=restored_text)
         
+    except ValueError as e:
+        # Handle validation errors (e.g., tokens not found in redacted text)
+        logger.warning(f"Validation error during restoration: {e}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid restoration request: {str(e)}"
+        )
     except Exception as e:
         logger.error(f"Error during restoration: {e}")
         raise HTTPException(
