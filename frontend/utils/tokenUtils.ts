@@ -27,7 +27,8 @@ export function validateTokens(tokens: any[]): tokens is RedactionToken[] {
     typeof token.type === 'string' &&
     typeof token.value === 'string' &&
     typeof token.original === 'string' &&
-    typeof token.position === 'number'
+    typeof token.position === 'number' &&
+    typeof token.end === 'number'
   );
 }
 

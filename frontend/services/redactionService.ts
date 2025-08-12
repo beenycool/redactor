@@ -80,18 +80,8 @@ class RedactionService {
       }
       const response = await this.apiClient.post<RedactionResponse>('/redact', payload);
 
-      // Log the raw response for debugging
-      console.log('Raw backend response:', response.data);
-
       // Transform backend tokens to frontend format
       const tokens: RedactionToken[] = response.data.tokens.map((token: BackendToken, index: number) => {
-        // Log each token transformation
-        console.log(`Mapping token ${index}:`, {
-          backend_token: token.token,
-          backend_value: token.value,
-          backend_type: token.type
-        });
-
         return {
           id: index + 1,
           type: token.type,
@@ -101,8 +91,6 @@ class RedactionService {
           end: token.end
         };
       });
-
-      console.log('Mapped tokens:', tokens);
 
       return {
         redactedText: response.data.redacted_text,
@@ -227,7 +215,7 @@ class EnhancedRedactionService extends RedactionService {
       const response = await axios.post<QwenCheckResponse>(
         `${url}/check_pii`,
         {
-          text,
+          text, // Send original text, not redacted text
           chunk_size: 500,
           existing_redactions: existingTokens
         },
@@ -261,7 +249,7 @@ class EnhancedRedactionService extends RedactionService {
     // Second pass with Qwen if available
     if (useQwen && this.getQwenUrl()) {
       const qwenCheck = await this.doubleCheckWithQwen(
-        firstPass.redactedText,
+        text, // Pass original text, not redacted text
         firstPass.tokens.map(t => ({
           token: t.value,
           value: t.original,

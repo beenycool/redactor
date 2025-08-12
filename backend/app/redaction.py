@@ -254,13 +254,14 @@ class PIIRedactor:
         
         return entities
     
-    def detect_pii(self, text: str, token_counter: Dict[str, int]) -> List[Dict[str, Any]]:
+    def detect_pii(self, text: str, token_counter: Dict[str, int], confidence_threshold: float = 0.5) -> List[Dict[str, Any]]:
         """
         Detect PII entities in text with batching support
 
         Args:
             text: Input text to analyze
             token_counter: Request-scoped token counter dict used for token generation
+            confidence_threshold: Minimum confidence score for entities (0.0-1.0)
 
         Returns:
             List of detected PII entities with metadata
@@ -315,18 +316,22 @@ class PIIRedactor:
         # Sort by position
         filtered_entities.sort(key=lambda x: x['start'])
 
+        # Filter by confidence threshold
+        filtered_entities = [e for e in filtered_entities if e.get('score', 0) >= confidence_threshold]
+
         # Generate redaction tokens using the request-scoped counter
         for entity in filtered_entities:
             entity['token'] = self._generate_redaction_token(entity['type'], token_counter)
 
         return filtered_entities
     
-    def redact_text(self, text: str) -> Tuple[str, List[Dict[str, Any]]]:
+    def redact_text(self, text: str, confidence_threshold: float = 0.5) -> Tuple[str, List[Dict[str, Any]]]:
         """
         Redact PII from text and return redacted text with token mappings
 
         Args:
             text: Original text to redact
+            confidence_threshold: Minimum confidence score for entities (0.0-1.0)
 
         Returns:
             Tuple of (redacted_text, token_mappings)
@@ -334,8 +339,8 @@ class PIIRedactor:
         # Create a fresh, request-scoped token counter
         token_counter: Dict[str, int] = {}
 
-        # Detect PII entities with request-scoped counter
-        entities = self.detect_pii(text, token_counter)
+        # Detect PII entities with request-scoped counter and confidence threshold
+        entities = self.detect_pii(text, token_counter, confidence_threshold)
         
         # If no entities found, return original text
         if not entities:
@@ -384,6 +389,11 @@ class PIIRedactor:
             Restored text with original values
         """
         restored_text = redacted_text
+        
+        # Validate that all tokens exist in the redacted text
+        for mapping in token_mappings:
+            if mapping['token'] not in redacted_text:
+                raise ValueError(f"Token '{mapping['token']}' not found in redacted text")
         
         # Sort mappings by token length (longest first) to avoid partial replacements
         sorted_mappings = sorted(
@@ -435,7 +445,7 @@ class EnhancedPIIRedactor(PIIRedactor):
         
         return all_entities
     
-    def detect_pii_with_consistency(self, text: str, token_counter: Dict[str, int]) -> List[Dict[str, Any]]:
+    def detect_pii_with_consistency(self, text: str, token_counter: Dict[str, int], confidence_threshold: float = 0.5) -> List[Dict[str, Any]]:
         """
         Enhanced PII detection with name consistency
         """
@@ -460,6 +470,9 @@ class EnhancedPIIRedactor(PIIRedactor):
         
         # Combine and deduplicate
         all_entities = self._merge_entities(consistent_entities + pattern_entities)
+        
+        # Filter by confidence threshold
+        all_entities = [e for e in all_entities if e.get('score', 0) >= confidence_threshold]
         
         # Generate tokens
         for entity in all_entities:

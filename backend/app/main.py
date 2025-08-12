@@ -149,15 +149,15 @@ except Exception as e:
 # Simple cache for recent redactions using LRU keyed by MD5 of input text
 # We store (redacted_text, token_mappings_as_list_of_dicts)
 @lru_cache(maxsize=100)
-def cached_redact(text_hash: str, original_text: str) -> Tuple[str, List[Dict[str, Any]]]:
+def cached_redact(text_hash: str, original_text: str, confidence_threshold: float = 0.5) -> Tuple[str, List[Dict[str, Any]]]:
     """
     LRU cache for recent redaction results.
-    Keyed by MD5 hash of the input text; original_text is provided so the function
+    Keyed by MD5 hash of the input text; original_text and confidence_threshold are provided so the function
     can compute when there is a miss. The LRU cache will cache by the text_hash only by
-    normalizing 'original_text' out via the caller always passing the same hash for the same text.
+    normalizing 'original_text' and 'confidence_threshold' out via the caller always passing the same hash for the same text.
     """
     # Perform redaction on miss
-    redacted_text, token_mappings = redactor.redact_text(original_text)
+    redacted_text, token_mappings = redactor.redact_text(original_text, confidence_threshold)
     return redacted_text, token_mappings
 
 
@@ -165,11 +165,13 @@ def cached_redact(text_hash: str, original_text: str) -> Tuple[str, List[Dict[st
 class RedactRequest(BaseModel):
     """Request model for redaction endpoint"""
     text: str = Field(..., max_length=50000, description="Original text to redact")
+    confidence_threshold: float = Field(0.5, ge=0.0, le=1.0, description="Minimum confidence threshold for PII detection (0.0-1.0)")
     
     class Config:
         json_schema_extra = {
             "example": {
-                "text": "John Doe appeared before Judge Smith on Case No. 2024-CR-1234. His SSN is 123-45-6789."
+                "text": "John Doe appeared before Judge Smith on Case No. 2024-CR-1234. His SSN is 123-45-6789.",
+                "confidence_threshold": 0.5
             }
         }
 
@@ -386,7 +388,7 @@ async def redact_text(request: RedactRequest):
         text_hash = hashlib.md5(request.text.encode()).hexdigest()
 
         # Use LRU cached function; it will compute on miss and cache the result
-        redacted_text, token_mappings = cached_redact(text_hash, request.text)
+        redacted_text, token_mappings = cached_redact(text_hash, request.text, request.confidence_threshold)
 
         logger.info(f"Redaction completed. Found {len(token_mappings)} PII entities")
 
