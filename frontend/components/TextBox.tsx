@@ -32,7 +32,7 @@ const TextBox: React.FC<TextBoxProps> = ({
     // Replace <PII_TYPE_#> patterns with highlighted spans
     // This matches patterns like <PII_PERSON_1>, <PII_EMAIL_1>, <PII_ADDRESS_1>, etc.
     return text.replace(/<PII_[A-Z_]+_\d+>/g, (match) => {
-      return `<span class="redacted">${match}</span>`;
+      return `<span class="inline-block px-2 py-1 mx-1 bg-blue-100 text-blue-800 rounded border border-blue-200 font-mono text-xs">${match}</span>`;
     });
   };
 
