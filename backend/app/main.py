@@ -16,12 +16,17 @@ import hashlib
 from typing import Optional, Tuple
 import time
 from fastapi import Request
+from cachetools import TTLCache
 
 from app.redaction import EnhancedPIIRedactor
 from app import __version__
 
 # Track process start time for uptime
 PROCESS_START_TIME = time.time()
+
+# Thread-safe TTL cache for redaction results
+# Cache size: 100 entries, TTL: 1 hour (3600 seconds)
+REDACTION_CACHE = TTLCache(maxsize=100, ttl=3600)
 
 
 def error_json(status_code: int, error: str, message: str, details: Any = None) -> Dict[str, Any]:
@@ -146,34 +151,6 @@ except Exception as e:
     logger.error(f"Failed to initialize PII Redactor: {e}")
     redactor = None
 
-# Simple cache for recent redactions using LRU keyed by MD5 of input text + confidence threshold
-# We store (redacted_text, token_mappings_as_list_of_dicts)
-@lru_cache(maxsize=100)
-def cached_redact(text_hash: str, confidence_threshold: float = 0.5) -> Tuple[str, List[Dict[str, Any]]]:
-    """
-    LRU cache for recent redaction results.
-    
-    The cache is keyed by (text_hash, confidence_threshold) tuple. The text_hash should be
-    a unique MD5 hash of the input text, ensuring that different texts with the same
-    confidence threshold don't collide, and the same text with different confidence
-    thresholds are cached separately.
-    
-    Args:
-        text_hash: MD5 hash of the input text (used as cache key)
-        confidence_threshold: Confidence threshold for PII detection (used as cache key)
-        
-    Returns:
-        Tuple of (redacted_text, token_mappings)
-        
-    Note:
-        The caller is responsible for ensuring that the text_hash uniquely identifies
-        the text content. If the same text is processed multiple times, the same
-        hash should be used to benefit from caching.
-    """
-    # This function should never be called directly - it's a cache wrapper
-    # The actual text content is not available here, so we can't perform redaction
-    raise RuntimeError("cached_redact should not be called directly. Use the redact_text endpoint instead.")
-
 
 def get_cached_redaction(text: str, confidence_threshold: float = 0.5) -> Tuple[str, List[Dict[str, Any]]]:
     """
@@ -196,23 +173,14 @@ def get_cached_redaction(text: str, confidence_threshold: float = 0.5) -> Tuple[
     cache_key = f"{text_hash}_{confidence_threshold}"
     
     # Check if we have a cached result
-    if hasattr(get_cached_redaction, '_cache'):
-        if cache_key in get_cached_redaction._cache:
-            return get_cached_redaction._cache[cache_key]
-    else:
-        get_cached_redaction._cache = {}
+    if cache_key in REDACTION_CACHE:
+        return REDACTION_CACHE[cache_key]
     
     # Compute new result
     redacted_text, token_mappings = redactor.redact_text(text, confidence_threshold)
     
-    # Cache the result
-    get_cached_redaction._cache[cache_key] = (redacted_text, token_mappings)
-    
-    # Limit cache size to prevent memory issues
-    if len(get_cached_redaction._cache) > 100:
-        # Remove oldest entries (simple FIFO)
-        oldest_key = next(iter(get_cached_redaction._cache))
-        del get_cached_redaction._cache[oldest_key]
+    # Cache the result (TTLCache handles size limiting automatically)
+    REDACTION_CACHE[cache_key] = (redacted_text, token_mappings)
     
     return redacted_text, token_mappings
 

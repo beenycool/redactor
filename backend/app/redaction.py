@@ -571,7 +571,7 @@ class EnhancedPIIRedactor(PIIRedactor):
         
         return pattern_entities
     
-    def _merge_entities(self, entities: List[Dict]) -> List[Dict]:
+    def _merge_entities(self, entities: List[Dict], text: str) -> List[Dict]:
         """
         Intelligent merging of overlapping entities
         """
