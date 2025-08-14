@@ -55,10 +55,7 @@ export default function Home() {
     });
     
     // Update historyIndex synchronously based on the actual new history length
-    setHistoryIndex(prev => {
-      const newIndex = Math.max(0, (historyIndex >= 0 ? historyIndex + 1 : 0));
-      return newIndex;
-    });
+    setHistoryIndex(prev => Math.max(0, prev + 1));
   }, [historyIndex]);
 
   // Undo handler
