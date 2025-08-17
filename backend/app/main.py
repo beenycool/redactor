@@ -170,20 +170,24 @@ def get_cached_redaction(text: str, confidence_threshold: float = 0.5) -> Tuple[
     """
     # Compute hash of input text for caching
     text_hash = hashlib.md5(text.encode()).hexdigest()
-    
-    # Create a unique cache key that includes both hash and threshold
-    cache_key = f"{text_hash}_{confidence_threshold}"
-    
-    # Check if we have a cached result
-    if cache_key in REDACTION_CACHE:
-        return REDACTION_CACHE[cache_key]
-    
-    # Compute new result
+
+    # Normalize threshold for key stability
+    threshold_key = f"{confidence_threshold:.6f}"
+    cache_key = (text_hash, threshold_key)
+
+    # Thread-safe cache lookup
+    with REDACTION_CACHE_LOCK:
+        cached = REDACTION_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+
+    # Compute new result outside the lock
     redacted_text, token_mappings = redactor.redact_text(text, confidence_threshold)
-    
-    # Cache the result (TTLCache handles size limiting automatically)
-    REDACTION_CACHE[cache_key] = (redacted_text, token_mappings)
-    
+
+    # Thread-safe cache write
+    with REDACTION_CACHE_LOCK:
+        REDACTION_CACHE[cache_key] = (redacted_text, token_mappings)
+
     return redacted_text, token_mappings
 
 
