@@ -130,21 +130,14 @@ export default function Home() {
         setRedactionError('');
   
         try {
-          let result;
-          
-          // Use enhanced service if Qwen or consistency features are enabled
-          if (useQwen || useConsistency) {
-            result = await enhancedRedactionService.redactTextEnhanced(
-              text, 
-              threshold, 
-              useQwen, 
-              useConsistency
-            );
-          } else {
-            // Use basic service
-            result = await redactionService.redactText(text, threshold);
-          }
-          
+          const result = (useQwen || useConsistency)
+            ? await enhancedRedactionService.redactTextEnhanced(
+                text,
+                threshold,
+                useQwen,
+                useConsistency
+              )
+            : await redactionService.redactText(text, threshold);
           setRedactedText(result.redactedText);
           currentTokensRef.current = result.tokens;
           setTokensJson(tokensToJson(result.tokens, true));
