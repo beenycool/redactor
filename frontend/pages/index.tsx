@@ -51,11 +51,11 @@ export default function Home() {
         finalHistory = updated.slice(updated.length - MAX_HISTORY_SIZE);
       }
       
-      // Update historyIndex synchronously based on the actual new history length
-      setHistoryIndex(Math.max(0, finalHistory.length - 1));
-      
       return finalHistory;
     });
+    
+    // Update historyIndex synchronously based on the actual new history length
+    setHistoryIndex(prev => Math.max(0, prev + 1));
   }, [historyIndex]);
 
   // Undo handler
@@ -130,7 +130,14 @@ export default function Home() {
         setRedactionError('');
   
         try {
-          const result = await redactionService.redactText(text, threshold);
+          const result = (useQwen || useConsistency)
+            ? await enhancedRedactionService.redactTextEnhanced(
+                text,
+                threshold,
+                useQwen,
+                useConsistency
+              )
+            : await redactionService.redactText(text, threshold);
           setRedactedText(result.redactedText);
           currentTokensRef.current = result.tokens;
           setTokensJson(tokensToJson(result.tokens, true));
@@ -149,7 +156,7 @@ export default function Home() {
           setIsRedacting(false);
         }
       },
-      [confidenceThreshold, pushHistory]
+      [confidenceThreshold, pushHistory, useQwen, useConsistency]
     );
 
     // Debounced handler for original text changes
@@ -488,6 +495,32 @@ export default function Home() {
           {/* Top Left - Original Text Input */}
           <div className="h-[400px]">
             {/* Sample Text Dropdown */}
+            <div className="mb-3">
+              <label htmlFor="sample-text" className="block text-sm font-medium text-gray-700 mb-2">
+                Sample Text:
+              </label>
+              <select
+                id="sample-text"
+                onChange={(e) => {
+                  const samples = {
+                    'court-report': 'John Doe appeared before Judge Smith on Case No. 2024-CR-1234. His SSN is 123-45-6789 and he lives at 123 Main Street, Anytown, CA 90210. Contact: john.doe@email.com or (555) 123-4567.',
+                    'medical-record': 'Patient Sarah Johnson, DOB: 03/15/1985, was admitted on 12/01/2024. Medical Record #MR-2024-001. Insurance: Blue Cross #BC123456789. Emergency contact: Mike Johnson, (555) 987-6543.',
+                    'financial-document': 'Account holder: Robert Wilson, Account #1234-5678-9012-3456. Transaction date: 11/30/2024. Amount: $1,250.00. Routing number: 021000021. Tax ID: 12-3456789.',
+                    'custom': ''
+                  };
+                  const selected = e.target.value;
+                  if (selected !== 'custom') {
+                    handleOriginalTextChange(samples[selected as keyof typeof samples]);
+                  }
+                }}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="custom">Select sample text...</option>
+                <option value="court-report">Court Report Example</option>
+                <option value="medical-record">Medical Record Example</option>
+                <option value="financial-document">Financial Document Example</option>
+              </select>
+            </div>
             <TextBox
               title="Original Text"
               content={originalText}
@@ -511,7 +544,20 @@ export default function Home() {
               highlightRedactions={true}
               loading={isRedacting}
             />
-            {/* Removed Copy to LLM Output button as requested */}
+            {/* Copy to LLM button */}
+            {redactedText && (
+              <div className="mt-2">
+                <button
+                  onClick={() => {
+                    setLlmOutput(redactedText);
+                    performRestoration(redactedText);
+                  }}
+                  className="px-3 py-1 bg-blue-500 text-white text-sm rounded hover:bg-blue-600 transition-colors"
+                >
+                  Copy to LLM Input
+                </button>
+              </div>
+            )}
             {/* Redaction Summary Panel */}
             {currentTokensRef.current.length > 0 && (
               <div className="mt-4 p-3 bg-gray-50 rounded">
@@ -530,28 +576,25 @@ export default function Home() {
             )}
           </div>
 
-          {/* Bottom Left - Tokens JSON Output */}
-          <div className="h-[400px]">
-                      {/* Redaction Tokens (JSON) display removed as requested */}
-                      {/* <TextBox
-                        title="Redaction Tokens (JSON)"
-                        content={tokensJson}
-                        readOnly={true}
-                        highlightRedactions={true}
-                      /> */}
-                      {/* Export/Import Tokens buttons removed */}
-                    </div>
-
-          {/* Bottom Right - LLM Output / Restored Text */}
+          {/* Bottom Left - Redacted Text Input for LLM */}
           <div className="h-[400px]">
             <TextBox
-              title="LLM Output (Paste redacted text here)"
+              title="Redacted Text (Paste for LLM)"
               content={llmOutput}
               onChange={handleLlmOutputChange}
-              placeholder="Paste the redacted text from LLM here to restore original values..."
+              placeholder="Paste the redacted text here to send to LLM..."
               loading={isRestoring}
             />
-            {/* Restored Text box removed as requested */}
+          </div>
+
+          {/* Bottom Right - Restored Text Output */}
+          <div className="h-[400px]">
+            <TextBox
+              title="Restored Text"
+              content={restoredText}
+              readOnly={true}
+              loading={isRestoring}
+            />
           </div>
         </div>
 

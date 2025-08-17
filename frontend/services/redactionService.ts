@@ -1,5 +1,4 @@
-import axios from 'axios';
-import type { AxiosError } from 'axios';
+import axios, { isAxiosError } from 'axios';
 
 // Base URL for the API - will be configured from environment variables
 const API_BASE_URL =
@@ -39,7 +38,7 @@ export interface RestorationResponse {
 }
 
 // Helper function for logging axios errors
-function logAxiosError(error: AxiosError, context: string): void {
+function logAxiosError(error: any, context: string): void {
   if (!DEBUG) return;
   
   console.error(`[${context}] Axios error:`, {
@@ -80,18 +79,8 @@ class RedactionService {
       }
       const response = await this.apiClient.post<RedactionResponse>('/redact', payload);
 
-      // Log the raw response for debugging
-      console.log('Raw backend response:', response.data);
-
       // Transform backend tokens to frontend format
       const tokens: RedactionToken[] = response.data.tokens.map((token: BackendToken, index: number) => {
-        // Log each token transformation
-        console.log(`Mapping token ${index}:`, {
-          backend_token: token.token,
-          backend_value: token.value,
-          backend_type: token.type
-        });
-
         return {
           id: index + 1,
           type: token.type,
@@ -102,15 +91,13 @@ class RedactionService {
         };
       });
 
-      console.log('Mapped tokens:', tokens);
-
       return {
         redactedText: response.data.redacted_text,
         tokens
       };
     } catch (error) {
-      if (error instanceof AxiosError || (error && (error as any).isAxiosError === true)) {
-        logAxiosError(error as AxiosError, 'redactText');
+      if (isAxiosError(error)) {
+        logAxiosError(error, 'redactText');
       } else {
         console.error('Error redacting text:', error);
       }
@@ -138,8 +125,8 @@ class RedactionService {
       });
       return response.data.restored_text;
     } catch (error) {
-      if (error instanceof AxiosError || (error && (error as any).isAxiosError === true)) {
-        logAxiosError(error as AxiosError, 'restoreText');
+      if (isAxiosError(error)) {
+        logAxiosError(error, 'restoreText');
       } else {
         console.error('Error restoring text:', error);
       }
@@ -156,8 +143,8 @@ class RedactionService {
       const response = await this.apiClient.get('/health');
       return response.status === 200;
     } catch (error) {
-      if (error instanceof AxiosError || (error && (error as any).isAxiosError === true)) {
-        logAxiosError(error as AxiosError, 'checkHealth');
+      if (isAxiosError(error)) {
+        logAxiosError(error, 'checkHealth');
       } else {
         console.error('API health check failed:', error);
       }
@@ -227,7 +214,7 @@ class EnhancedRedactionService extends RedactionService {
       const response = await axios.post<QwenCheckResponse>(
         `${url}/check_pii`,
         {
-          text,
+          text, // Send original text, not redacted text
           chunk_size: 500,
           existing_redactions: existingTokens
         },
@@ -261,7 +248,7 @@ class EnhancedRedactionService extends RedactionService {
     // Second pass with Qwen if available
     if (useQwen && this.getQwenUrl()) {
       const qwenCheck = await this.doubleCheckWithQwen(
-        firstPass.redactedText,
+        text, // Pass original text, not redacted text
         firstPass.tokens.map(t => ({
           token: t.value,
           value: t.original,
