@@ -68,8 +68,9 @@ def setup_ngrok_tunnel(port: int = 3000, auth_token: str = None):
     try:
         from pyngrok import ngrok
 
-        # Use the hardcoded token or the provided auth_token
-        token_to_use = auth_token or '2yK681gpNjRYbPbXX2aChPFHXGc_GHciwTfSC3GDB1RycjXS'
+        # Use provided auth_token or environment variable
+        import os
+        token_to_use = auth_token or os.environ.get('NGROK_AUTH_TOKEN')
 
         if token_to_use:
             ngrok.set_auth_token(token_to_use)
