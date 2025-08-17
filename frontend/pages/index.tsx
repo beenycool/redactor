@@ -517,7 +517,7 @@ export default function Home() {
                   };
                   const selected = e.target.value;
                   if (selected !== 'custom') {
-                    setOriginalText(samples[selected as keyof typeof samples]);
+                    handleOriginalTextChange(samples[selected as keyof typeof samples]);
                   }
                 }}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
