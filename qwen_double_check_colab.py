@@ -803,8 +803,9 @@ if __name__ == "__main__":
     print("🤖 Qwen PII Analysis API for Colab - Auto-Start")
     print("="*60)
 
-    # Use the hardcoded token directly
-    ngrok_token = '2yK681gpNjRYbPbXX2aChPFHXGc_GHciwTfSC3GDB1RycjXS'
+    import os
+    # Read token from environment or pass explicitly to start_colab_api_server
+    ngrok_token = os.environ.get('NGROK_AUTH_TOKEN')
 
     if not ngrok_token:
         print("⚠️ No ngrok token found.")
