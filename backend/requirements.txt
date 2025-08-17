@@ -1,7 +1,7 @@
 fastapi==0.111.0
 uvicorn[standard]==0.30.1
-torch==2.4.0  # Pinned to stable version - 2.8.0 doesn't exist and would cause install failures
-transformers==4.44.2  # Pinned to stable version - 4.53.0 doesn't exist and would cause install failures
+torch==2.8.0  # Pinned to stable version - 2.8.0 doesn't exist and would cause install failures
+transformers==4.53.2  # Pinned to stable version - 4.53.0 doesn't exist and would cause install failures
 python-multipart==0.0.18
 pydantic==2.8.2
 python-jose[cryptography]==3.3.0

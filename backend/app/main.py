@@ -560,7 +560,8 @@ async def startup_event():
         # Warm up the model with a test sentence
         try:
             test_text = "This is a test."
-            redactor.detect_pii(test_text)
+            test_token_counter = {}
+            redactor.detect_pii(test_text, test_token_counter)
             logger.info("Model warmup completed")
         except Exception as e:
             logger.error(f"Model warmup failed: {e}")

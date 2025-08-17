@@ -1,5 +1,4 @@
-import axios from 'axios';
-import type { AxiosError } from 'axios';
+import axios, { isAxiosError } from 'axios';
 
 // Base URL for the API - will be configured from environment variables
 const API_BASE_URL =
@@ -39,7 +38,7 @@ export interface RestorationResponse {
 }
 
 // Helper function for logging axios errors
-function logAxiosError(error: AxiosError, context: string): void {
+function logAxiosError(error: any, context: string): void {
   if (!DEBUG) return;
   
   console.error(`[${context}] Axios error:`, {
@@ -97,8 +96,8 @@ class RedactionService {
         tokens
       };
     } catch (error) {
-      if (error instanceof AxiosError || (error && (error as any).isAxiosError === true)) {
-        logAxiosError(error as AxiosError, 'redactText');
+      if (isAxiosError(error)) {
+        logAxiosError(error, 'redactText');
       } else {
         console.error('Error redacting text:', error);
       }
@@ -126,8 +125,8 @@ class RedactionService {
       });
       return response.data.restored_text;
     } catch (error) {
-      if (error instanceof AxiosError || (error && (error as any).isAxiosError === true)) {
-        logAxiosError(error as AxiosError, 'restoreText');
+      if (isAxiosError(error)) {
+        logAxiosError(error, 'restoreText');
       } else {
         console.error('Error restoring text:', error);
       }
@@ -144,8 +143,8 @@ class RedactionService {
       const response = await this.apiClient.get('/health');
       return response.status === 200;
     } catch (error) {
-      if (error instanceof AxiosError || (error && (error as any).isAxiosError === true)) {
-        logAxiosError(error as AxiosError, 'checkHealth');
+      if (isAxiosError(error)) {
+        logAxiosError(error, 'checkHealth');
       } else {
         console.error('API health check failed:', error);
       }
