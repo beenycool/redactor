@@ -24,11 +24,13 @@ from app import __version__
 # Track process start time for uptime
 PROCESS_START_TIME = time.time()
 
+from cachetools import TTLCache
+import threading
+
 # Thread-safe TTL cache for redaction results
 # Cache size: 100 entries, TTL: 1 hour (3600 seconds)
 REDACTION_CACHE = TTLCache(maxsize=100, ttl=3600)
 REDACTION_CACHE_LOCK = threading.RLock()
-
 def error_json(status_code: int, error: str, message: str, details: Any = None) -> Dict[str, Any]:
     """
     Helper function to create consistent error response envelopes.
