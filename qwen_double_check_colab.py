@@ -206,7 +206,7 @@ class RedactorAPIClient:
             return {
                 "original": text,
                 "redacted": result.get("redacted_text", ""),
-                "mappings": result.get("token_mappings", [])
+                "mappings": result.get("tokens", [])
             }
 
         except requests.RequestException as e:
