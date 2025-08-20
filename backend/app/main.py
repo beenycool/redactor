@@ -311,21 +311,23 @@ class DependencyStatus(BaseModel):
     version: str = ""
 
 class DetailedHealthResponse(BaseModel):
-class TokenValidationRequest(BaseModel):
-    tokens: List[TokenMapping]
-    text: str | None = None
-
-class TokenValidationResponse(BaseModel):
-    valid: bool
-    errors: List[str] = []
-    warnings: List[str] = []
-
     status: str = Field(..., description="Service status")
     uptime: float = Field(..., description="Uptime in seconds")
     version: str = Field(..., description="Service version")
     dependencies: List[DependencyStatus] = Field(..., description="Dependency status list")
     model_loaded: bool = Field(..., description="Whether the model is loaded")
     message: str = Field(..., description="Status message")
+
+
+class TokenValidationRequest(BaseModel):
+    tokens: List[TokenMapping]
+    text: str | None = None
+
+
+class TokenValidationResponse(BaseModel):
+    valid: bool
+    errors: List[str] = []
+    warnings: List[str] = []
 
 
 # API Endpoints
@@ -467,6 +469,61 @@ async def redact_text(request: RedactRequest):
 
 @app.post("/restore", response_model=RestoreResponse, tags=["Restoration"])
 async def restore_text(request: RestoreRequest):
+    """
+    Restore original text from redacted text using token mappings
+    
+    This endpoint accepts:
+    - Redacted text containing PII tokens
+    - Token mappings with original values
+    
+    Returns the restored text with original values
+    """
+    if redactor is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Redaction service is not available. Model failed to load."
+        )
+    
+    try:
+        logger.info(f"Processing restore request with {len(request.tokens)} tokens")
+        
+        # Convert token mappings to dict format
+        token_mappings = [
+            {
+                "token": token.token,
+                "value": token.value,
+                "type": token.type,
+                "start": token.start,
+                "end": token.end
+            }
+            for token in request.tokens
+        ]
+        
+        # Perform restoration
+        restored_text = redactor.restore_text(
+            request.redacted_text,
+            token_mappings
+        )
+        
+        logger.info("Text restoration completed")
+        
+        return RestoreResponse(restored_text=restored_text)
+        
+    except ValueError as e:
+        # Handle validation errors (e.g., tokens not found in redacted text)
+        logger.warning(f"Validation error during restoration: {e}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid restoration request: {str(e)}"
+        ) from e
+    except Exception as e:
+        logger.error(f"Error during restoration: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error restoring text: {str(e)}"
+        )
+
+
 @app.get('/type-mappings', tags=["Metadata"])
 async def get_type_mappings():
     """Expose shared backend type canonicalization mapping."""
@@ -477,6 +534,7 @@ async def get_type_mappings():
         return { 'mapping': data }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load mappings: {e}")
+
 
 @app.post('/validate-tokens', response_model=TokenValidationResponse, tags=["Validation"])
 async def validate_tokens(req: TokenValidationRequest):

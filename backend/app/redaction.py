@@ -158,7 +158,7 @@ class PIIRedactor:
         entities = []
         current_entity = None
         
-    for i, (start, end) in enumerate(offset_mapping):
+        for i, (start, end) in enumerate(offset_mapping):
             if start == end:  # Special token
                 continue
                 
