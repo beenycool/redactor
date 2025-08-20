@@ -20,6 +20,8 @@ from cachetools import TTLCache
 
 from app.redaction import EnhancedPIIRedactor
 from app import __version__
+import json
+from pydantic import BaseModel, validator
 
 # Track process start time for uptime
 PROCESS_START_TIME = time.time()
@@ -101,29 +103,47 @@ app.add_middleware(
 
 # --- Rate Limiting Middleware ---
 class RateLimitMiddleware:
-    def __init__(self, app, max_requests: int = 60, window_seconds: int = 60):
+    def __init__(self, app, max_requests: int = 60, window_seconds: int = 60, cleanup_interval: int = 300):
         self.app = app
         self.max_requests = max_requests
         self.window_seconds = window_seconds
         self.requests: Dict[str, List[float]] = {}
+        self._last_cleanup = time.time()
+        self._cleanup_interval = cleanup_interval
+
+    def _cleanup(self, now: float):
+        # Remove IPs whose latest request is outside current window to prevent unbounded growth
+        window_start = now - self.window_seconds
+        to_delete = []
+        for ip, ts_list in self.requests.items():
+            # Keep only recent timestamps
+            filtered = [ts for ts in ts_list if ts > window_start]
+            if filtered:
+                self.requests[ip] = filtered
+            else:
+                to_delete.append(ip)
+        for ip in to_delete:
+            del self.requests[ip]
+        self._last_cleanup = now
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
 
-        # Get client IP
         client_host = scope.get("client")
         ip = client_host[0] if client_host else "unknown"
-
         now = time.time()
-        window_start = now - self.window_seconds
 
-        # Clean up old timestamps and count requests
+        # Periodic cleanup
+        if now - self._last_cleanup > self._cleanup_interval:
+            self._cleanup(now)
+
+        window_start = now - self.window_seconds
         timestamps = self.requests.get(ip, [])
+        # Filter timestamps inline (no separate list comprehension) for efficiency
         timestamps = [ts for ts in timestamps if ts > window_start]
         if len(timestamps) >= self.max_requests:
-            # Rate limit exceeded
             response = JSONResponse(
                 status_code=429,
                 content=error_json(
@@ -135,7 +155,6 @@ class RateLimitMiddleware:
             await response(scope, receive, send)
             return
 
-        # Record this request
         timestamps.append(now)
         self.requests[ip] = timestamps
 
@@ -172,7 +191,9 @@ def get_cached_redaction(text: str, confidence_threshold: float = 0.5) -> Tuple[
     text_hash = hashlib.md5(text.encode()).hexdigest()
 
     # Normalize threshold for key stability
-    threshold_key = f"{confidence_threshold:.6f}"
+    # Normalize threshold to an exact decimal string independent of float repr noise
+    # Limit to 4 decimal places logically (0.0001 resolution) for cache grouping
+    threshold_key = format(round(confidence_threshold + 1e-10, 4), '.4f')
     cache_key = (text_hash, threshold_key)
 
     # Thread-safe cache lookup
@@ -290,6 +311,15 @@ class DependencyStatus(BaseModel):
     version: str = ""
 
 class DetailedHealthResponse(BaseModel):
+class TokenValidationRequest(BaseModel):
+    tokens: List[TokenMapping]
+    text: str | None = None
+
+class TokenValidationResponse(BaseModel):
+    valid: bool
+    errors: List[str] = []
+    warnings: List[str] = []
+
     status: str = Field(..., description="Service status")
     uptime: float = Field(..., description="Uptime in seconds")
     version: str = Field(..., description="Service version")
@@ -437,6 +467,47 @@ async def redact_text(request: RedactRequest):
 
 @app.post("/restore", response_model=RestoreResponse, tags=["Restoration"])
 async def restore_text(request: RestoreRequest):
+@app.get('/type-mappings', tags=["Metadata"])
+async def get_type_mappings():
+    """Expose shared backend type canonicalization mapping."""
+    try:
+        mapping_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'shared', 'type_mappings.json')
+        with open(mapping_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return { 'mapping': data }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load mappings: {e}")
+
+@app.post('/validate-tokens', response_model=TokenValidationResponse, tags=["Validation"])
+async def validate_tokens(req: TokenValidationRequest):
+    """Validate a list of token mappings optionally against a text body."""
+    errors: List[str] = []
+    warnings: List[str] = []
+    # Basic structural checks
+    seen_tokens = {}
+    for t in req.tokens:
+        if t.start >= t.end:
+            errors.append(f"Token {t.token} has invalid span [{t.start},{t.end}]")
+        if t.token in seen_tokens and seen_tokens[t.token] != t.value:
+            errors.append(f"Placeholder collision for {t.token}")
+        else:
+            seen_tokens[t.token] = t.value
+        # Optional text span validation
+        if req.text:
+            if t.end > len(req.text):
+                errors.append(f"Token {t.token} end index {t.end} exceeds text length")
+            else:
+                span = req.text[t.start:t.end]
+                if span.strip() and span.strip() != t.value.strip():
+                    warnings.append(f"Span mismatch for {t.token}: text='{span}' vs stored='{t.value}'")
+    # Overlap detection
+    sorted_spans = sorted(req.tokens, key=lambda x: x.start)
+    for i in range(1, len(sorted_spans)):
+        prev = sorted_spans[i-1]
+        cur = sorted_spans[i]
+        if cur.start < prev.end:
+            errors.append(f"Overlap between {prev.token} and {cur.token}")
+    return TokenValidationResponse(valid=len(errors)==0, errors=errors, warnings=warnings)
     """
     Restore original text from redacted text using token mappings
     

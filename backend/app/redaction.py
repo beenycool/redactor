@@ -4,6 +4,7 @@ PII Redaction Module using Piiranha model for personal information detection
 
 import re
 from typing import List, Dict, Any, Tuple
+import json, os
 import torch
 from transformers import AutoTokenizer, AutoModelForTokenClassification
 
@@ -104,57 +105,17 @@ class PIIRedactor:
         Returns:
             Descriptive redaction token
         """
-        # Clean entity type (remove B- or I- prefixes)
+        # Lazy-load shared mapping JSON once
+        if not hasattr(self, '_shared_type_mapping'):
+            mapping_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'shared', 'type_mappings.json')
+            try:
+                with open(mapping_path, 'r', encoding='utf-8') as f:
+                    self._shared_type_mapping = json.load(f)
+            except Exception:
+                self._shared_type_mapping = {}
+
         clean_type = entity_type.replace('B-', '').replace('I-', '').upper()
-
-        # Map entity types to more descriptive names
-        type_mapping = {
-            'GIVENNAME': 'NAME',
-            'SURNAME': 'NAME',
-            'PERSON': 'NAME',
-            'PERSONTYPE': 'PERSON_TYPE',
-            'NORP': 'NATIONALITY',
-            'FAC': 'FACILITY',
-            'ORG': 'ORGANIZATION',
-            'GPE': 'LOCATION',
-            'LOC': 'LOCATION',
-            'PRODUCT': 'PRODUCT',
-            'EVENT': 'EVENT',
-            'WORK_OF_ART': 'ARTWORK',
-            'LAW': 'LEGAL_REFERENCE',
-            'LANGUAGE': 'LANGUAGE',
-            'DATE': 'DATE',
-            'TIME': 'TIME',
-            'PERCENT': 'PERCENTAGE',
-            'MONEY': 'MONETARY_AMOUNT',
-            'QUANTITY': 'QUANTITY',
-            'ORDINAL': 'ORDINAL_NUMBER',
-            'CARDINAL': 'NUMBER',
-            'SSN': 'SSN',
-            'PHONE': 'PHONE_NUMBER',
-            'EMAIL': 'EMAIL_ADDRESS',
-            'ADDRESS': 'ADDRESS',
-            'CASE_NUMBER': 'CASE_NUMBER',
-            'COURT_ID': 'COURT_ID',
-            'DRIVER_LICENSE': 'DRIVER_LICENSE',
-            'BADGE_NUMBER': 'BADGE_NUMBER',
-            'NATIONAL_INSURANCE': 'NATIONAL_INSURANCE',
-            'UK_POSTCODE': 'POSTCODE',
-            # Added new types for enhanced patterns
-            'VEHICLE_REGISTRATION': 'VEHICLE_REGISTRATION',
-            'BANK_SORT_CODE': 'BANK_SORT_CODE',
-            'ACCOUNT_NUMBER': 'ACCOUNT_NUMBER',
-            'PARTIAL_CARD_NUMBER': 'PARTIAL_CARD_NUMBER',
-            'FINANCIAL_AMOUNT': 'FINANCIAL_AMOUNT',
-            'MEDICAL_ID': 'MEDICAL_ID',
-            'LEGAL_ID': 'LEGAL_ID',
-            'POLICE_ID': 'POLICE_ID',
-            'ALPHANUMERIC_CODE': 'ALPHANUMERIC_CODE',
-            'GENERIC_ID': 'GENERIC_ID',
-            'FILENAME': 'FILENAME'
-        }
-
-        descriptive_type = type_mapping.get(clean_type, clean_type)
+        descriptive_type = self._shared_type_mapping.get(clean_type, clean_type)
 
         # Use the provided per-request counter
         count = token_counter.get(descriptive_type, 0) + 1
@@ -197,7 +158,7 @@ class PIIRedactor:
         entities = []
         current_entity = None
         
-        for i, (start, end) in enumerate(offset_mapping):
+    for i, (start, end) in enumerate(offset_mapping):
             if start == end:  # Special token
                 continue
                 
@@ -216,13 +177,20 @@ class PIIRedactor:
                 entity_type = label.replace('I-', '')
                 
                 # Check if this is continuation of previous entity of same type
+                # Convert positions to absolute for comparison
+                abs_start = start + chunk_offset
+                abs_end = end + chunk_offset
                 if (current_entity and
                     current_entity['type'] == entity_type and
-                    start <= current_entity['end'] + 1):  # Allow for single space gap
-                    # Extend current entity
-                    current_entity['end'] = end + chunk_offset
-                    # Properly handle the text between entities
-                    gap_text = text[current_entity['end'] - chunk_offset:start]
+                    abs_start <= current_entity['end'] + 1):  # Allow for single-space gap
+                    # Properly handle gap BEFORE updating end
+                    prev_end_abs = current_entity['end']
+                    gap_text = ""
+                    if abs_start > prev_end_abs:
+                        # slice text using chunk-relative indexes
+                        prev_end_rel = prev_end_abs - chunk_offset
+                        gap_text = text[prev_end_rel:start]
+                    current_entity['end'] = abs_end
                     current_entity['value'] += gap_text + entity_text
                 else:
                     # Save previous entity if exists
@@ -235,8 +203,8 @@ class PIIRedactor:
                     current_entity = {
                         'value': entity_text,
                         'type': entity_type,
-                        'start': start + chunk_offset,
-                        'end': end + chunk_offset,
+                        'start': abs_start,
+                        'end': abs_end,
                         'score': torch.softmax(outputs.logits[0][i], dim=-1).max().item()
                     }
             else:

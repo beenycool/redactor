@@ -41,21 +41,20 @@ export default function Home() {
   // Helper to push new state to history
   const pushHistory = useCallback((newState: HistoryState) => {
     setHistory(prev => {
-      // If not at end, truncate future
-      const truncated = historyIndex >= 0 ? prev.slice(0, historyIndex + 1) : prev;
-      const updated = [...truncated, newState];
-      // Enforce maximum history size
-      let finalHistory = updated;
-      if (updated.length > MAX_HISTORY_SIZE) {
-        // Remove oldest entries
-        finalHistory = updated.slice(updated.length - MAX_HISTORY_SIZE);
+      // Determine the base slice using current historyIndex atomically inside setState
+      const effectiveIndex = historyIndex >= 0 ? Math.min(historyIndex, prev.length - 1) : -1;
+      const truncated = effectiveIndex >= 0 ? prev.slice(0, effectiveIndex + 1) : [];
+      const appended = [...truncated, newState];
+      // Enforce maximum size strictly (drop oldest first)
+      const overflow = appended.length - MAX_HISTORY_SIZE;
+      const finalHistory = overflow > 0 ? appended.slice(overflow) : appended;
+      // Adjust index after determining final array
+      const newIndex = finalHistory.length - 1;
+      if (newIndex !== historyIndex) {
+        setHistoryIndex(newIndex);
       }
-      
       return finalHistory;
     });
-    
-    // Update historyIndex synchronously based on the actual new history length
-    setHistoryIndex(prev => Math.max(0, prev + 1));
   }, [historyIndex]);
 
   // Undo handler
@@ -301,9 +300,33 @@ export default function Home() {
           showToast('No tokens found in file');
           return;
         }
+        // Basic structural validation: ensure tokens don't overlap and are sorted
+        const sorted = [...parsed].sort((a,b)=> a.position - b.position);
+        for (let i=1;i<sorted.length;i++) {
+          if (sorted[i].position < sorted[i-1].end) {
+            showToast('Invalid tokens: overlapping spans');
+            return;
+          }
+        }
         // Apply imported tokens to current session
         currentTokensRef.current = parsed as RedactionToken[];
         setTokensJson(tokensToJson(parsed as RedactionToken[], true));
+        // Attempt to rebuild redactedText from current originalText using imported spans for UX coherence
+        try {
+          // Sort and apply
+          let rebuilt = originalText;
+          if (originalText && sorted.length) {
+            let out = '';
+            let cursor = 0;
+            for (const t of sorted) {
+              if (t.position < cursor) continue;
+              out += originalText.slice(cursor, t.position) + t.value;
+              cursor = t.end;
+            }
+            out += originalText.slice(cursor);
+            setRedactedText(out);
+          }
+        } catch {/* ignore rebuild errors */}
         showToast('Tokens imported');
       } catch (e) {
         console.error('Failed to import tokens', e);
@@ -312,7 +335,7 @@ export default function Home() {
     };
     reader.onerror = () => showToast('Failed to read file');
     reader.readAsText(file);
-  }, [showToast]);
+  }, [showToast, originalText]);
 
   const handleOpenFileDialog = useCallback(() => {
     fileInputRef.current?.click();
@@ -346,6 +369,27 @@ export default function Home() {
         toastTimeoutRef.current = null;
       }
     };
+  }, []);
+
+  // Hydrate stored Qwen URL and silently validate
+  useEffect(() => {
+    try {
+      if (typeof window !== 'undefined') {
+        const stored = localStorage.getItem('qwen_url');
+        if (stored) {
+          setQwenUrl(stored);
+          // Light health probe
+          fetch(`${stored}/health`, { method: 'GET' })
+            .then(r => {
+              if (r.ok) {
+                enhancedRedactionService.setQwenUrl(stored);
+                setUseQwen(true);
+              }
+            })
+            .catch(() => {/* ignore */});
+        }
+      }
+    } catch {/* ignore */}
   }, []);
 
     // Keyboard shortcuts
@@ -489,7 +533,7 @@ export default function Home() {
           <div className="mb-4 p-4 bg-red-100 border border-red-400 text-red-700 rounded">
             {redactionError || restorationError}
           </div>
-        )}r
+  )}
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Top Left - Original Text Input */}
