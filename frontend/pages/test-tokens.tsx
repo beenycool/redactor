@@ -1,10 +1,16 @@
 import React, { useState } from 'react';
-import { redactionService } from '../services/redactionService';
+import { redactionService, RedactionToken } from '../services/redactionService';
 import { tokensToJson } from '../utils/tokenUtils';
+
+interface RedactionTestResult {
+  redactedText: string;
+  tokens: RedactionToken[];
+  jsonOutput: string;
+}
 
 export default function TestTokens() {
   const [text, setText] = useState('Bob Smith appeared before Judge Johnson on Case No. 2024-CR-1234.');
-  const [result, setResult] = useState<any>(null);
+  const [result, setResult] = useState<RedactionTestResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -19,8 +25,9 @@ export default function TestTokens() {
         tokens: response.tokens,
         jsonOutput: jsonOutput
       });
-    } catch (err: any) {
-      setError(err.message || 'An error occurred');
+    } catch (err) {
+      const message = (err instanceof Error) ? err.message : 'An error occurred';
+      setError(message);
     } finally {
       setLoading(false);
     }
