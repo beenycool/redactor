@@ -21,8 +21,6 @@ from cachetools import TTLCache
 from app.redaction import EnhancedPIIRedactor
 from app import __version__
 import json
-from pydantic import BaseModel, validator
-
 # Track process start time for uptime
 PROCESS_START_TIME = time.time()
 
